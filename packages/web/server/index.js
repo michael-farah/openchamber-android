@@ -3398,6 +3398,15 @@ const ENV_EFFECTIVE_PORT = ENV_CONFIGURED_OPENCODE_HOST?.port ?? ENV_CONFIGURED_
 const ENV_SKIP_OPENCODE_START = process.env.OPENCODE_SKIP_START === 'true' ||
                                     process.env.OPENCHAMBER_SKIP_OPENCODE_START === 'true';
 const ENV_DESKTOP_NOTIFY = process.env.OPENCHAMBER_DESKTOP_NOTIFY === 'true';
+const ENV_CONFIGURED_OPENCODE_WSL_DISTRO =
+  typeof process.env.OPENCODE_WSL_DISTRO === 'string' && process.env.OPENCODE_WSL_DISTRO.trim().length > 0
+    ? process.env.OPENCODE_WSL_DISTRO.trim()
+    : (
+      typeof process.env.OPENCHAMBER_OPENCODE_WSL_DISTRO === 'string' &&
+      process.env.OPENCHAMBER_OPENCODE_WSL_DISTRO.trim().length > 0
+        ? process.env.OPENCHAMBER_OPENCODE_WSL_DISTRO.trim()
+        : null
+    );
 
 // OpenCode server authentication (Basic Auth with username "opencode")
 
@@ -3644,6 +3653,10 @@ let resolvedOpencodeBinary = null;
 let resolvedOpencodeBinarySource = null;
 let resolvedNodeBinary = null;
 let resolvedBunBinary = null;
+let useWslForOpencode = false;
+let resolvedWslBinary = null;
+let resolvedWslOpencodePath = null;
+let resolvedWslDistro = null;
 
 function isExecutable(filePath) {
   try {
@@ -3682,6 +3695,136 @@ function searchPathFor(binaryName) {
   return null;
 }
 
+function isWslExecutableValue(value) {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  return /(^|[\\/])wsl(\.exe)?$/i.test(trimmed);
+}
+
+function clearWslOpencodeResolution() {
+  useWslForOpencode = false;
+  resolvedWslBinary = null;
+  resolvedWslOpencodePath = null;
+  resolvedWslDistro = null;
+}
+
+function resolveWslExecutablePath() {
+  if (process.platform !== 'win32') {
+    return null;
+  }
+
+  const explicit = [process.env.WSL_BINARY, process.env.OPENCHAMBER_WSL_BINARY]
+    .map((v) => (typeof v === 'string' ? v.trim() : ''))
+    .filter(Boolean);
+
+  for (const candidate of explicit) {
+    if (isExecutable(candidate)) {
+      return candidate;
+    }
+  }
+
+  try {
+    const result = spawnSync('where', ['wsl'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (result.status === 0) {
+      const lines = (result.stdout || '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const found = lines.find((line) => isExecutable(line));
+      if (found) {
+        return found;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  const fallback = path.join(systemRoot, 'System32', 'wsl.exe');
+  if (isExecutable(fallback)) {
+    return fallback;
+  }
+
+  return null;
+}
+
+function buildWslExecArgs(execArgs, distroOverride = null) {
+  const distro = typeof distroOverride === 'string' && distroOverride.trim().length > 0
+    ? distroOverride.trim()
+    : ENV_CONFIGURED_OPENCODE_WSL_DISTRO;
+
+  const prefix = distro ? ['-d', distro] : [];
+  return [...prefix, '--exec', ...execArgs];
+}
+
+function probeWslForOpencode() {
+  if (process.platform !== 'win32') {
+    return null;
+  }
+
+  const wslBinary = resolveWslExecutablePath();
+  if (!wslBinary) {
+    return null;
+  }
+
+  try {
+    const result = spawnSync(
+      wslBinary,
+      buildWslExecArgs(['sh', '-lc', 'command -v opencode']),
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 6000,
+      },
+    );
+
+    if (result.status !== 0) {
+      return null;
+    }
+
+    const lines = (result.stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const found = lines[0] || '';
+    if (!found) {
+      return null;
+    }
+
+    return {
+      wslBinary,
+      opencodePath: found,
+      distro: ENV_CONFIGURED_OPENCODE_WSL_DISTRO,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function applyWslOpencodeResolution({ wslBinary, opencodePath, source = 'wsl', distro = null } = {}) {
+  const resolvedWsl = wslBinary || resolveWslExecutablePath();
+  if (!resolvedWsl) {
+    return null;
+  }
+
+  useWslForOpencode = true;
+  resolvedWslBinary = resolvedWsl;
+  resolvedWslOpencodePath = typeof opencodePath === 'string' && opencodePath.trim().length > 0
+    ? opencodePath.trim()
+    : 'opencode';
+  resolvedWslDistro = typeof distro === 'string' && distro.trim().length > 0 ? distro.trim() : ENV_CONFIGURED_OPENCODE_WSL_DISTRO;
+  resolvedOpencodeBinary = `wsl:${resolvedWslOpencodePath}`;
+  resolvedOpencodeBinarySource = source;
+
+  // Keep OPENCODE_BINARY empty in WSL mode to avoid native spawn attempts.
+  delete process.env.OPENCODE_BINARY;
+  return resolvedOpencodeBinary;
+}
+
 function resolveOpencodeCliPath() {
   const explicit = [
     process.env.OPENCODE_BINARY,
@@ -3694,6 +3837,7 @@ function resolveOpencodeCliPath() {
 
   for (const candidate of explicit) {
     if (isExecutable(candidate)) {
+      clearWslOpencodeResolution();
       resolvedOpencodeBinarySource = 'env';
       return candidate;
     }
@@ -3701,6 +3845,7 @@ function resolveOpencodeCliPath() {
 
   const resolvedFromPath = searchPathFor('opencode');
   if (resolvedFromPath) {
+    clearWslOpencodeResolution();
     resolvedOpencodeBinarySource = 'path';
     return resolvedFromPath;
   }
@@ -3739,6 +3884,7 @@ function resolveOpencodeCliPath() {
   const fallbacks = process.platform === 'win32' ? winFallbacks : unixFallbacks;
   for (const candidate of fallbacks) {
     if (isExecutable(candidate)) {
+      clearWslOpencodeResolution();
       resolvedOpencodeBinarySource = 'fallback';
       return candidate;
     }
@@ -3757,12 +3903,22 @@ function resolveOpencodeCliPath() {
           .filter(Boolean);
         const found = lines.find((line) => isExecutable(line));
         if (found) {
+          clearWslOpencodeResolution();
           resolvedOpencodeBinarySource = 'where';
           return found;
         }
       }
     } catch {
       // ignore
+    }
+    const wsl = probeWslForOpencode();
+    if (wsl) {
+      return applyWslOpencodeResolution({
+        wslBinary: wsl.wslBinary,
+        opencodePath: wsl.opencodePath,
+        source: 'wsl',
+        distro: wsl.distro,
+      });
     }
     return null;
   }
@@ -3778,6 +3934,7 @@ function resolveOpencodeCliPath() {
       if (result.status === 0) {
         const found = (result.stdout || '').trim().split(/\s+/).pop() || '';
         if (found && isExecutable(found)) {
+          clearWslOpencodeResolution();
           resolvedOpencodeBinarySource = 'shell';
           return found;
         }
@@ -4059,10 +4216,44 @@ async function applyOpencodeBinaryFromSettings() {
       delete process.env.OPENCODE_BINARY;
       resolvedOpencodeBinary = null;
       resolvedOpencodeBinarySource = null;
+      clearWslOpencodeResolution();
       return null;
     }
 
+    const raw = typeof settings.opencodeBinary === 'string' ? settings.opencodeBinary.trim() : '';
+
+    const explicitWslPath = process.platform === 'win32' && typeof raw === 'string'
+      ? raw.match(/^wsl:\s*(.+)$/i)
+      : null;
+
+    if (explicitWslPath && explicitWslPath[1] && explicitWslPath[1].trim().length > 0) {
+      const probe = probeWslForOpencode();
+      const applied = applyWslOpencodeResolution({
+        wslBinary: probe?.wslBinary || resolveWslExecutablePath(),
+        opencodePath: explicitWslPath[1].trim(),
+        source: 'settings-wsl-path',
+        distro: probe?.distro || ENV_CONFIGURED_OPENCODE_WSL_DISTRO,
+      });
+      if (applied) {
+        return applied;
+      }
+    }
+
+    if (process.platform === 'win32' && (isWslExecutableValue(raw) || isWslExecutableValue(normalized || ''))) {
+      const probe = probeWslForOpencode();
+      const applied = applyWslOpencodeResolution({
+        wslBinary: probe?.wslBinary || normalized || raw || null,
+        opencodePath: probe?.opencodePath || 'opencode',
+        source: 'settings-wsl',
+        distro: probe?.distro || ENV_CONFIGURED_OPENCODE_WSL_DISTRO,
+      });
+      if (applied) {
+        return applied;
+      }
+    }
+
     if (normalized && isExecutable(normalized)) {
+      clearWslOpencodeResolution();
       process.env.OPENCODE_BINARY = normalized;
       prependToPath(path.dirname(normalized));
       resolvedOpencodeBinary = normalized;
@@ -4071,7 +4262,6 @@ async function applyOpencodeBinaryFromSettings() {
       return normalized;
     }
 
-    const raw = typeof settings.opencodeBinary === 'string' ? settings.opencodeBinary.trim() : '';
     if (raw) {
       console.warn(`Configured settings.opencodeBinary is not executable: ${raw}`);
     }
@@ -4084,12 +4274,16 @@ async function applyOpencodeBinaryFromSettings() {
 
 function ensureOpencodeCliEnv() {
   if (resolvedOpencodeBinary) {
+    if (useWslForOpencode) {
+      return resolvedOpencodeBinary;
+    }
     ensureOpencodeShimRuntime(resolvedOpencodeBinary);
     return resolvedOpencodeBinary;
   }
 
   const existing = typeof process.env.OPENCODE_BINARY === 'string' ? process.env.OPENCODE_BINARY.trim() : '';
   if (existing && isExecutable(existing)) {
+    clearWslOpencodeResolution();
     resolvedOpencodeBinary = existing;
     resolvedOpencodeBinarySource = resolvedOpencodeBinarySource || 'env';
     prependToPath(path.dirname(existing));
@@ -4099,6 +4293,13 @@ function ensureOpencodeCliEnv() {
 
   const resolved = resolveOpencodeCliPath();
   if (resolved) {
+    if (useWslForOpencode) {
+      resolvedOpencodeBinary = resolved;
+      resolvedOpencodeBinarySource = resolvedOpencodeBinarySource || 'wsl';
+      console.log(`Resolved opencode CLI via WSL: ${resolvedWslOpencodePath || 'opencode'}`);
+      return resolved;
+    }
+
     process.env.OPENCODE_BINARY = resolved;
     prependToPath(path.dirname(resolved));
     ensureOpencodeShimRuntime(resolved);
@@ -4108,6 +4309,7 @@ function ensureOpencodeCliEnv() {
     return resolved;
   }
 
+  clearWslOpencodeResolution();
   return null;
 }
 
@@ -5171,12 +5373,34 @@ async function createManagedOpenCodeServerProcess({
   env,
 }) {
   let binary = (process.env.OPENCODE_BINARY || 'opencode').trim() || 'opencode';
-  const args = ['serve', '--hostname', hostname, '--port', String(port)];
+  let args = ['serve', '--hostname', hostname, '--port', String(port)];
+
+  if (process.platform === 'win32' && useWslForOpencode) {
+    const wslBinary = resolvedWslBinary || resolveWslExecutablePath();
+    if (!wslBinary) {
+      throw new Error('WSL executable not found while attempting to launch OpenCode from WSL');
+    }
+
+    const wslOpencode = resolvedWslOpencodePath && resolvedWslOpencodePath.trim().length > 0
+      ? resolvedWslOpencodePath.trim()
+      : 'opencode';
+    const serveHost = hostname === '127.0.0.1' ? '0.0.0.0' : hostname;
+
+    binary = wslBinary;
+    args = buildWslExecArgs([
+      wslOpencode,
+      'serve',
+      '--hostname',
+      serveHost,
+      '--port',
+      String(port),
+    ], resolvedWslDistro);
+  }
 
   // On Windows, Bun/Node cannot directly spawn shell wrapper scripts (#!/bin/sh).
   // Detect if the resolved binary is a shim that wraps a Node/Bun script and
   // resolve the actual target so we can spawn it with the correct interpreter.
-  if (process.platform === 'win32') {
+  if (process.platform === 'win32' && !useWslForOpencode) {
     const interpreter = opencodeShimInterpreter(binary);
     if (interpreter) {
       // Binary itself has a node/bun shebang – spawn via that interpreter.
@@ -6310,6 +6534,10 @@ async function main(options = {}) {
       opencodeBinaryResolved: resolvedOpencodeBinary || null,
       opencodeBinarySource: resolvedOpencodeBinarySource || null,
       opencodeShimInterpreter: resolvedOpencodeBinary ? opencodeShimInterpreter(resolvedOpencodeBinary) : null,
+      opencodeViaWsl: useWslForOpencode,
+      opencodeWslBinary: resolvedWslBinary || null,
+      opencodeWslPath: resolvedWslOpencodePath || null,
+      opencodeWslDistro: resolvedWslDistro || null,
       nodeBinaryResolved: resolvedNodeBinary || null,
       bunBinaryResolved: resolvedBunBinary || null,
     });
@@ -7687,6 +7915,10 @@ async function main(options = {}) {
         detectedNow,
         detectedSourceNow,
         shim,
+        viaWsl: useWslForOpencode,
+        wslBinary: resolvedWslBinary || null,
+        wslPath: resolvedWslOpencodePath || null,
+        wslDistro: resolvedWslDistro || null,
         node: resolvedNodeBinary || null,
         bun: resolvedBunBinary || null,
       });
