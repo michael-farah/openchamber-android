@@ -517,6 +517,28 @@ export const Header: React.FC<HeaderProps> = ({
     return { id: activeProject.id, path: activeProject.path };
   }, [activeProject]);
 
+  const lastProjectActionsContextRef = React.useRef<{
+    projectRef: { id: string; path: string };
+    directory: string;
+  } | null>(null);
+
+  React.useEffect(() => {
+    if (!activeProjectRef || !actionDirectory) {
+      return;
+    }
+    lastProjectActionsContextRef.current = {
+      projectRef: activeProjectRef,
+      directory: actionDirectory,
+    };
+  }, [actionDirectory, activeProjectRef]);
+
+  const projectActionsContext = React.useMemo(() => {
+    if (activeProjectRef && actionDirectory) {
+      return { projectRef: activeProjectRef, directory: actionDirectory };
+    }
+    return lastProjectActionsContextRef.current;
+  }, [actionDirectory, activeProjectRef]);
+
 
   const [planTabAvailable, setPlanTabAvailable] = React.useState(false);
   const showPlanTab = planTabAvailable;
@@ -1007,15 +1029,15 @@ export const Header: React.FC<HeaderProps> = ({
       </Tooltip>
 
       {activeProjectLabel && (
-        <div className="mr-3 min-w-0 max-w-[16rem] truncate typography-ui-label font-medium text-foreground">
+        <div className="mr-3 min-w-0 max-w-[16rem] truncate pl-2 typography-ui-header text-[calc(var(--text-ui-header)+0.125rem)] font-medium text-foreground">
           {activeProjectLabel}
         </div>
       )}
 
-      {activeProjectRef && actionDirectory && (
+      {projectActionsContext && (
         <ProjectActionsButton
-          projectRef={activeProjectRef}
-          directory={actionDirectory}
+          projectRef={projectActionsContext.projectRef}
+          directory={projectActionsContext.directory}
           className="mr-1"
         />
       )}
@@ -1569,10 +1591,10 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
-            {activeProjectRef && actionDirectory && (
+            {projectActionsContext && (
               <ProjectActionsButton
-                projectRef={activeProjectRef}
-                directory={actionDirectory}
+                projectRef={projectActionsContext.projectRef}
+                directory={projectActionsContext.directory}
                 compact
                 allowMobile
                 className="h-9"
