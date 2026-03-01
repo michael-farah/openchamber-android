@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/select';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useDeviceInfo } from '@/lib/device';
+import { updateDesktopSettings } from '@/lib/persistence';
 import {
     setDirectoryShowHidden,
     useDirectoryShowHidden,
@@ -172,6 +173,16 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     } = useThemeSystem();
 
     const [themesReloading, setThemesReloading] = React.useState(false);
+    const handleUserMessageRenderingModeChange = React.useCallback((mode: 'markdown' | 'plain') => {
+        setUserMessageRenderingMode(mode);
+        void updateDesktopSettings({ userMessageRenderingMode: mode });
+    }, [setUserMessageRenderingMode]);
+
+    const handleStickyUserHeaderChange = React.useCallback((enabled: boolean) => {
+        setStickyUserHeader(enabled);
+        void updateDesktopSettings({ stickyUserHeader: enabled });
+    }, [setStickyUserHeader]);
+
     const lightThemes = React.useMemo(
         () => availableThemes
             .filter((theme) => theme.metadata.variant === 'light')
@@ -644,18 +655,18 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                                     role="button"
                                                     tabIndex={0}
                                                     aria-pressed={selected}
-                                                    onClick={() => setUserMessageRenderingMode(option.id)}
+                                                    onClick={() => handleUserMessageRenderingModeChange(option.id)}
                                                     onKeyDown={(event) => {
                                                         if (event.key === ' ' || event.key === 'Enter') {
                                                             event.preventDefault();
-                                                            setUserMessageRenderingMode(option.id);
+                                                            handleUserMessageRenderingModeChange(option.id);
                                                         }
                                                     }}
                                                     className="flex w-full items-center gap-2 py-0.5 text-left"
                                                 >
                                                     <Radio
                                                         checked={selected}
-                                                        onChange={() => setUserMessageRenderingMode(option.id)}
+                                                        onChange={() => handleUserMessageRenderingModeChange(option.id)}
                                                         ariaLabel={`User message rendering: ${option.label}`}
                                                     />
                                                     <span className={cn('typography-ui-label font-normal', selected ? 'text-foreground' : 'text-foreground/50')}>
@@ -748,17 +759,17 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                             role="button"
                                             tabIndex={0}
                                             aria-pressed={stickyUserHeader}
-                                            onClick={() => setStickyUserHeader(!stickyUserHeader)}
+                                            onClick={() => handleStickyUserHeaderChange(!stickyUserHeader)}
                                             onKeyDown={(event) => {
                                                 if (event.key === ' ' || event.key === 'Enter') {
                                                     event.preventDefault();
-                                                    setStickyUserHeader(!stickyUserHeader);
+                                                    handleStickyUserHeaderChange(!stickyUserHeader);
                                                 }
                                             }}
                                         >
                                             <Checkbox
                                                 checked={stickyUserHeader}
-                                                onChange={setStickyUserHeader}
+                                                onChange={handleStickyUserHeaderChange}
                                                 ariaLabel="Sticky user header"
                                             />
                                             <span className="typography-ui-label text-foreground">Sticky User Header</span>
