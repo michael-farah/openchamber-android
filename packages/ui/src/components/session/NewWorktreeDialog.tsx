@@ -15,6 +15,9 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SelectLabel,
+  SelectGroup,
+  SelectSeparator,
 } from '@/components/ui/select';
 import {
   RiGitBranchLine,
@@ -142,6 +145,23 @@ export function NewWorktreeDialog({
   
   // Use cached branches from Git store (instant if already fetched)
   const branches = useGitBranches(projectDirectory);
+  
+  // Compute local and remote branch lists (same pattern as GitView)
+  const localBranches = React.useMemo(() => {
+    if (!branches?.all) return [];
+    return branches.all
+      .filter((branchName: string) => !branchName.startsWith('remotes/'))
+      .sort();
+  }, [branches]);
+  
+  const remoteBranches = React.useMemo(() => {
+    if (!branches?.all) return [];
+    return branches.all
+      .filter((branchName: string) => branchName.startsWith('remotes/'))
+      .map((branchName: string) => branchName.replace(/^remotes\//, ''))
+      .sort();
+  }, [branches]);
+  
   const [githubDialogOpen, setGithubDialogOpen] = React.useState(false);
   
   // Mobile branch picker states
@@ -525,7 +545,7 @@ export function NewWorktreeDialog({
             {/* Branch Name / Existing Branch Selection */}
             {mode === 'existing-branch' ? (
               <div className="space-y-1.5">
-                <label className="typography-ui-label text-foreground block">
+                <label className="typography-ui-label text-foreground block font-semibold">
                   Select Branch
                 </label>
                 <Button
@@ -546,34 +566,76 @@ export function NewWorktreeDialog({
                   title="Select Branch"
                   onClose={() => setExistingBranchPickerOpen(false)}
                 >
-                  <div className="space-y-1">
-                    {branches?.all && branches.all.length > 0 ? (
-                      branches.all.map(branch => (
-                        <button
-                          key={branch}
-                          onClick={() => {
-                            setExistingBranchState(prev => ({
-                              ...prev,
-                              selectedBranch: branch,
-                              worktreeName: slugifyWorktreeName(branch),
-                            }));
-                            setValidation(prev => ({ ...prev, touched: true }));
-                            setExistingBranchPickerOpen(false);
-                          }}
-                          className={cn(
-                            'w-full text-left px-3 py-2.5 rounded-md transition-colors',
-                            existingBranchState.selectedBranch === branch
-                              ? 'bg-interactive-selection text-interactive-selection-foreground'
-                              : 'hover:bg-interactive-hover'
-                          )}
-                        >
-                          <span className="typography-small">{branch}</span>
-                        </button>
-                      ))
-                    ) : (
+                  <div className="space-y-4">
+                    {localBranches.length === 0 && remoteBranches.length === 0 ? (
                       <div className="px-2 py-8 text-center typography-small text-muted-foreground">
                         No branches found
                       </div>
+                    ) : (
+                      <>
+                        {localBranches.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="typography-small font-semibold text-foreground px-2">
+                              Local branches
+                            </div>
+                            <div className="space-y-1">
+                              {localBranches.map(branch => (
+                                <button
+                                  key={branch}
+                                  onClick={() => {
+                                    setExistingBranchState(prev => ({
+                                      ...prev,
+                                      selectedBranch: branch,
+                                      worktreeName: slugifyWorktreeName(branch),
+                                    }));
+                                    setValidation(prev => ({ ...prev, touched: true }));
+                                    setExistingBranchPickerOpen(false);
+                                  }}
+                                  className={cn(
+                                    'w-full text-left px-3 py-2.5 rounded-md transition-colors',
+                                    existingBranchState.selectedBranch === branch
+                                      ? 'bg-interactive-selection text-interactive-selection-foreground'
+                                      : 'hover:bg-interactive-hover'
+                                  )}
+                                >
+                                  <span className="typography-small break-all">{branch}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {remoteBranches.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="typography-small font-semibold text-foreground px-2">
+                              Remote branches
+                            </div>
+                            <div className="space-y-1">
+                              {remoteBranches.map(branch => (
+                                <button
+                                  key={`remotes/${branch}`}
+                                  onClick={() => {
+                                    setExistingBranchState(prev => ({
+                                      ...prev,
+                                      selectedBranch: `remotes/${branch}`,
+                                      worktreeName: slugifyWorktreeName(branch),
+                                    }));
+                                    setValidation(prev => ({ ...prev, touched: true }));
+                                    setExistingBranchPickerOpen(false);
+                                  }}
+                                  className={cn(
+                                    'w-full text-left px-3 py-2.5 rounded-md transition-colors',
+                                    existingBranchState.selectedBranch === `remotes/${branch}`
+                                      ? 'bg-interactive-selection text-interactive-selection-foreground'
+                                      : 'hover:bg-interactive-hover'
+                                  )}
+                                >
+                                  <span className="typography-small break-all">{branch}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 </MobileOverlayPanel>
@@ -581,7 +643,7 @@ export function NewWorktreeDialog({
             ) : (
               <div className="space-y-1.5">
                 <div className="flex flex-col items-start gap-1.5">
-                  <label className="typography-ui-label text-foreground block">
+                  <label className="typography-ui-label text-foreground block font-semibold">
                     Branch Name
                   </label>
                   {mode === 'new-branch' && isGitHubConnected && (
@@ -638,7 +700,7 @@ export function NewWorktreeDialog({
             {/* Worktree Directory */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <label className="typography-ui-label text-foreground">
+                <label className="typography-ui-label text-foreground font-semibold">
                   Worktree Directory
                 </label>
                 {mode !== 'existing-branch' && (
@@ -693,7 +755,7 @@ export function NewWorktreeDialog({
             {/* Source Branch - Only for New Branch mode, hide when PR is selected */}
             {mode === 'new-branch' && !newBranchState.linkedPr && (
               <div className="space-y-1.5">
-                <label className="typography-ui-label text-foreground block">
+                <label className="typography-ui-label text-foreground block font-semibold">
                   Source Branch
                 </label>
                 <Button
@@ -719,29 +781,66 @@ export function NewWorktreeDialog({
                   title="Select Source Branch"
                   onClose={() => setSourceBranchPickerOpen(false)}
                 >
-                  <div className="space-y-1">
-                    {branches?.all && branches.all.length > 0 ? (
-                      branches.all.map(branch => (
-                        <button
-                          key={branch}
-                          onClick={() => {
-                            setNewBranchState(prev => ({ ...prev, sourceBranch: branch }));
-                            setSourceBranchPickerOpen(false);
-                          }}
-                          className={cn(
-                            'w-full text-left px-3 py-2.5 rounded-md transition-colors',
-                            newBranchState.sourceBranch === branch
-                              ? 'bg-interactive-selection text-interactive-selection-foreground'
-                              : 'hover:bg-interactive-hover'
-                          )}
-                        >
-                          <span className="typography-small">{branch}</span>
-                        </button>
-                      ))
-                    ) : (
+                  <div className="space-y-4">
+                    {localBranches.length === 0 && remoteBranches.length === 0 ? (
                       <div className="px-2 py-8 text-center typography-small text-muted-foreground">
                         No branches found
                       </div>
+                    ) : (
+                      <>
+                        {localBranches.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="typography-small font-semibold text-foreground px-2">
+                              Local branches
+                            </div>
+                            <div className="space-y-1">
+                              {localBranches.map(branch => (
+                                <button
+                                  key={branch}
+                                  onClick={() => {
+                                    setNewBranchState(prev => ({ ...prev, sourceBranch: branch }));
+                                    setSourceBranchPickerOpen(false);
+                                  }}
+                                  className={cn(
+                                    'w-full text-left px-3 py-2.5 rounded-md transition-colors',
+                                    newBranchState.sourceBranch === branch
+                                      ? 'bg-interactive-selection text-interactive-selection-foreground'
+                                      : 'hover:bg-interactive-hover'
+                                  )}
+                                >
+                                  <span className="typography-small break-all">{branch}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {remoteBranches.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="typography-small font-semibold text-foreground px-2">
+                              Remote branches
+                            </div>
+                            <div className="space-y-1">
+                              {remoteBranches.map(branch => (
+                                <button
+                                  key={`remotes/${branch}`}
+                                  onClick={() => {
+                                    setNewBranchState(prev => ({ ...prev, sourceBranch: `remotes/${branch}` }));
+                                    setSourceBranchPickerOpen(false);
+                                  }}
+                                  className={cn(
+                                    'w-full text-left px-3 py-2.5 rounded-md transition-colors',
+                                    newBranchState.sourceBranch === `remotes/${branch}`
+                                      ? 'bg-interactive-selection text-interactive-selection-foreground'
+                                      : 'hover:bg-interactive-hover'
+                                  )}
+                                >
+                                  <span className="typography-small break-all">{branch}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 </MobileOverlayPanel>
@@ -766,7 +865,7 @@ export function NewWorktreeDialog({
                     </span>
                   )}
                   
-                  <span className="typography-small text-foreground truncate flex-1">
+                  <span className="typography-micro text-foreground truncate flex-1">
                     {newBranchState.linkedIssue?.title || newBranchState.linkedPr?.title}
                   </span>
                   
@@ -836,7 +935,7 @@ export function NewWorktreeDialog({
               {/* Branch Name / Existing Branch Selection */}
               {mode === 'existing-branch' ? (
                 <div className="space-y-1.5">
-                  <label className="typography-ui-label text-foreground block">
+                  <label className="typography-ui-label text-foreground block font-semibold">
                     Select Branch
                   </label>
                   <Select
@@ -853,25 +952,45 @@ export function NewWorktreeDialog({
                     <SelectTrigger size="lg" className="w-fit">
                       <SelectValue placeholder="Choose a branch..." />
                     </SelectTrigger>
-                    <SelectContent>
-                      {branches?.all && branches.all.length > 0 ? (
-                        branches.all.map(branch => (
-                          <SelectItem key={branch} value={branch}>
-                            {branch}
-                          </SelectItem>
-                        ))
-                      ) : (
-                        <div className="px-2 py-4 text-center typography-small text-muted-foreground">
-                          No branches found
-                        </div>
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
-              ) : (
-                <div className="space-y-1.5">
+                  <SelectContent className="max-h-[280px] max-w-[320px]">
+                    {localBranches.length === 0 && remoteBranches.length === 0 ? (
+                      <div className="px-2 py-4 text-center typography-small text-muted-foreground">
+                        No branches found
+                      </div>
+                    ) : (
+                      <>
+                        {localBranches.length > 0 && (
+                          <SelectGroup>
+                            <SelectLabel className="typography-small font-semibold text-foreground">Local branches</SelectLabel>
+                            {localBranches.map(branch => (
+                              <SelectItem key={branch} value={branch} className="whitespace-normal break-all">
+                                {branch}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
+                        {localBranches.length > 0 && remoteBranches.length > 0 && (
+                          <SelectSeparator />
+                        )}
+                        {remoteBranches.length > 0 && (
+                          <SelectGroup>
+                            <SelectLabel className="typography-small font-semibold text-foreground">Remote branches</SelectLabel>
+                            {remoteBranches.map(branch => (
+                              <SelectItem key={`remotes/${branch}`} value={`remotes/${branch}`} className="whitespace-normal break-all">
+                                {branch}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
+                      </>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <label className="typography-ui-label text-foreground block">
+                    <label className="typography-ui-label text-foreground block font-semibold">
                       Branch Name
                     </label>
                     {mode === 'new-branch' && isGitHubConnected && (
@@ -928,7 +1047,7 @@ export function NewWorktreeDialog({
               {/* Worktree Directory */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <label className="typography-ui-label text-foreground">
+                  <label className="typography-ui-label text-foreground font-semibold">
                     Worktree Directory
                   </label>
                   {mode !== 'existing-branch' && (
@@ -983,7 +1102,7 @@ export function NewWorktreeDialog({
               {/* Source Branch - Only for New Branch mode, hide when PR is selected */}
               {mode === 'new-branch' && !newBranchState.linkedPr && (
                 <div className="space-y-1.5">
-                  <label className="typography-ui-label text-foreground block">
+                  <label className="typography-ui-label text-foreground block font-semibold">
                     Source Branch
                   </label>
                   <Select 
@@ -993,17 +1112,37 @@ export function NewWorktreeDialog({
                     <SelectTrigger size="lg" className="w-fit">
                       <SelectValue placeholder="Select source branch..." />
                     </SelectTrigger>
-                    <SelectContent>
-                      {branches?.all && branches.all.length > 0 ? (
-                        branches.all.map(branch => (
-                          <SelectItem key={branch} value={branch}>
-                            {branch}
-                          </SelectItem>
-                        ))
-                      ) : (
+                    <SelectContent className="max-h-[280px] max-w-[320px]">
+                      {localBranches.length === 0 && remoteBranches.length === 0 ? (
                         <div className="px-2 py-4 text-center typography-small text-muted-foreground">
                           No branches found
                         </div>
+                      ) : (
+                        <>
+                          {localBranches.length > 0 && (
+                            <SelectGroup>
+                              <SelectLabel className="typography-small font-semibold text-foreground">Local branches</SelectLabel>
+                              {localBranches.map(branch => (
+                                <SelectItem key={branch} value={branch} className="whitespace-normal break-all">
+                                  {branch}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          )}
+                          {localBranches.length > 0 && remoteBranches.length > 0 && (
+                            <SelectSeparator />
+                          )}
+                          {remoteBranches.length > 0 && (
+                            <SelectGroup>
+                              <SelectLabel className="typography-small font-semibold text-foreground">Remote branches</SelectLabel>
+                              {remoteBranches.map(branch => (
+                                <SelectItem key={`remotes/${branch}`} value={`remotes/${branch}`} className="whitespace-normal break-all">
+                                  {branch}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          )}
+                        </>
                       )}
                     </SelectContent>
                   </Select>
@@ -1033,7 +1172,7 @@ export function NewWorktreeDialog({
                       </span>
                     )}
                     
-                    <span className="typography-small text-foreground truncate flex-1">
+                    <span className="typography-micro text-foreground truncate flex-1">
                       {newBranchState.linkedIssue?.title || newBranchState.linkedPr?.title}
                     </span>
                     
