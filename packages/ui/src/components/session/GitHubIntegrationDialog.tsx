@@ -459,12 +459,34 @@ export function GitHubIntegrationDialog({
 
   // Footer content
   const footerContent = (
-    <div className={cn('flex gap-2', isMobile ? 'flex-col w-full' : 'flex-row items-center')}>
-      {/* Checkbox */}
-      <div className={cn('flex items-center gap-4', isMobile ? 'w-full justify-center order-first' : 'mr-auto')}>
+    <div className={cn(
+      'w-full',
+      isMobile ? 'flex flex-col gap-2' : 'flex flex-row items-center'
+    )}>
+      {/* Left side: Selected Item / Checkbox */}
+      <div className={cn(
+        'flex items-center gap-4',
+        isMobile ? 'w-full justify-center order-1' : 'flex-1'
+      )}>
+        {/* Selected Issue/PR display - hidden on mobile (shown in header instead) */}
+        {!isMobile && (selectedIssue || selectedPr) && (
+          <div className="flex items-center gap-2 px-2 h-8 rounded-md bg-muted/50 border border-border/50">
+            <RiCheckLine className="h-3.5 w-3.5 text-status-success shrink-0" />
+            <span className="typography-small truncate max-w-[150px]">
+              {selectedIssue ? `Issue #${selectedIssue.number}` : `PR #${selectedPr?.number}`}
+            </span>
+            <button
+              onClick={handleClear}
+              className="text-muted-foreground hover:text-foreground shrink-0 p-0.5 rounded hover:bg-muted transition-colors"
+            >
+              <RiCloseLine className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+        
         {/* Include Diff Checkbox - only show when PR tab is active and PR is selected */}
         {activeTab === 'prs' && selectedPr && (
-          <label className="flex items-center gap-2 cursor-pointer">
+          <label className="flex items-center gap-2 cursor-pointer h-8">
             <Checkbox
               checked={includeDiff}
               onChange={(checked) => setIncludeDiff(checked)}
@@ -477,8 +499,11 @@ export function GitHubIntegrationDialog({
         )}
       </div>
       
-      {/* Buttons */}
-      <div className={cn('flex gap-2', isMobile && 'w-full')}>
+      {/* Right side: Buttons */}
+      <div className={cn(
+        'flex gap-2',
+        isMobile ? 'w-full order-2' : 'justify-end'
+      )}>
         <Button
           variant="outline"
           size="sm"
@@ -577,60 +602,13 @@ export function GitHubIntegrationDialog({
                   />
                 </div>
               </div>
-              
-              {/* Selected Item Inline Display */}
-              {(selectedIssue || selectedPr) && (
-                <div className="flex items-center gap-2 px-2 py-1 rounded-md bg-muted/50 border border-border/50">
-                  <RiCheckLine className="h-3.5 w-3.5 text-status-success shrink-0" />
-                  <span className="typography-small truncate max-w-[120px]">
-                    {selectedIssue ? `Issue #${selectedIssue.number}` : `PR #${selectedPr?.number}`}
-                  </span>
-                  <button
-                    onClick={handleClear}
-                    className="text-muted-foreground hover:text-foreground shrink-0 p-0.5 rounded hover:bg-muted transition-colors"
-                  >
-                    <RiCloseLine className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              )}
             </DialogHeader>
 
             {dialogContent}
 
-            {/* Footer with inline checkbox for PR diff */}
-            <DialogFooter className="mt-1 flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                {/* Include Diff Checkbox - only show when PR tab is active and PR is selected */}
-                {activeTab === 'prs' && selectedPr && (
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <Checkbox
-                      checked={includeDiff}
-                      onChange={(checked) => setIncludeDiff(checked)}
-                      ariaLabel="Include PR diff in session context"
-                    />
-                    <span className="typography-small text-foreground">
-                      Include PR diff
-                    </span>
-                  </label>
-                )}
-              </div>
-              
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onOpenChange(false)}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleConfirm}
-                  disabled={!canConfirm}
-                >
-                  Select
-                </Button>
-              </div>
+            {/* Footer */}
+            <DialogFooter className="mt-1">
+              {footerContent}
             </DialogFooter>
           </DialogContent>
         </Dialog>
