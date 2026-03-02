@@ -35,17 +35,25 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSessionStore } from '@/stores/useSessionStore';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { useMessageStore } from '@/stores/messageStore';
+import { useContextStore } from '@/stores/contextStore';
 import { validateWorktreeCreate, createWorktree } from '@/lib/worktrees/worktreeManager';
 import { withWorktreeUpstreamDefaults } from '@/lib/worktrees/worktreeCreate';
 import { getWorktreeSetupCommands } from '@/lib/openchamberConfig';
 import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
 import { generateBranchSlug } from '@/lib/git/branchNameGenerator';
+import { opencodeClient } from '@/lib/opencode/client';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useGitBranches } from '@/stores/useGitStore';
 import { GitHubIntegrationDialog } from './GitHubIntegrationDialog';
 import { SortableTabsStrip } from '@/components/ui/sortable-tabs-strip';
 import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
 import type {
   GitHubIssue,
+  GitHubIssueComment,
+  GitHubIssuesListResult,
+  GitHubPullRequestContextResult,
   GitHubPullRequestSummary,
 } from '@/lib/api/types';
 import type { ProjectRef } from '@/lib/worktrees/worktreeManager';
@@ -104,14 +112,32 @@ const LAST_SOURCE_BRANCH_KEY = 'oc:lastWorktreeSourceBranch';
 interface NewWorktreeDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onWorktreeCreated?: (worktreePath: string) => void;
+  onWorktreeCreated?: (worktreePath: string, options?: { sessionId?: string }) => void;
 }
+
+const buildIssueContextText = (args: {
+  repo: GitHubIssuesListResult['repo'] | undefined;
+  issue: GitHubIssue;
+  comments: GitHubIssueComment[];
+}) => {
+  const payload = {
+    repo: args.repo ?? null,
+    issue: args.issue,
+    comments: args.comments,
+  };
+  return `GitHub issue context (JSON)\n${JSON.stringify(payload, null, 2)}`;
+};
+
+const buildPullRequestContextText = (payload: GitHubPullRequestContextResult) => {
+  return `GitHub pull request context (JSON)\n${JSON.stringify(payload, null, 2)}`;
+};
 
 export function NewWorktreeDialog({
   open,
   onOpenChange,
   onWorktreeCreated,
 }: NewWorktreeDialogProps) {
+  const { github } = useRuntimeAPIs();
   const isMobile = useUIStore((state) => state.isMobile);
   const githubAuthStatus = useGitHubAuthStore((state) => state.status);
   const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
@@ -165,6 +191,7 @@ export function NewWorktreeDialog({
   
   // Get existing worktrees for the current project to avoid conflicts
   const availableWorktreesByProject = useSessionStore((state) => state.availableWorktreesByProject);
+  const loadSessions = useSessionStore((state) => state.loadSessions);
   const existingWorktreeNames = React.useMemo(() => {
     if (!projectDirectory) return new Set<string>();
     const worktrees = availableWorktreesByProject.get(projectDirectory) ?? [];
@@ -200,6 +227,289 @@ export function NewWorktreeDialog({
   // Creation state
   const [isCreating, setIsCreating] = React.useState(false);
   const [validationAbortController, setValidationAbortController] = React.useState<AbortController | null>(null);
+
+  const resolveDefaultAgentName = React.useCallback((): string | undefined => {
+    const configState = useConfigStore.getState();
+    const visibleAgents = configState.getVisibleAgents();
+
+    if (configState.settingsDefaultAgent) {
+      const settingsAgent = visibleAgents.find((a) => a.name === configState.settingsDefaultAgent);
+      if (settingsAgent) {
+        return settingsAgent.name;
+      }
+    }
+
+    return visibleAgents.find((agent) => agent.name === 'build')?.name || visibleAgents[0]?.name;
+  }, []);
+
+  const resolveDefaultModelSelection = React.useCallback((): { providerID: string; modelID: string } | null => {
+    const configState = useConfigStore.getState();
+    const settingsDefaultModel = configState.settingsDefaultModel;
+    if (!settingsDefaultModel) return null;
+
+    const parts = settingsDefaultModel.split('/');
+    if (parts.length !== 2) return null;
+    const [providerID, modelID] = parts;
+    if (!providerID || !modelID) return null;
+
+    const modelMetadata = configState.getModelMetadata(providerID, modelID);
+    if (!modelMetadata) return null;
+    return { providerID, modelID };
+  }, []);
+
+  const resolveDefaultVariant = React.useCallback((providerID: string, modelID: string): string | undefined => {
+    const configState = useConfigStore.getState();
+    const settingsDefaultVariant = configState.settingsDefaultVariant;
+    if (!settingsDefaultVariant) return undefined;
+
+    const provider = configState.providers.find((p) => p.id === providerID);
+    const model = provider?.models.find((m: Record<string, unknown>) => (m as { id?: string }).id === modelID) as
+      | { variants?: Record<string, unknown> }
+      | undefined;
+    const variants = model?.variants;
+    if (!variants) return undefined;
+    if (!Object.prototype.hasOwnProperty.call(variants, settingsDefaultVariant)) return undefined;
+    return settingsDefaultVariant;
+  }, []);
+
+  const applySessionModelAndAgentDefaults = React.useCallback((args: {
+    sessionId: string;
+    providerID: string;
+    modelID: string;
+    agentName?: string;
+    variant?: string;
+  }) => {
+    const configState = useConfigStore.getState();
+
+    try {
+      useContextStore.getState().saveSessionModelSelection(args.sessionId, args.providerID, args.modelID);
+    } catch {
+      // ignore
+    }
+
+    if (!args.agentName) {
+      return;
+    }
+
+    try {
+      configState.setAgent(args.agentName);
+    } catch {
+      // ignore
+    }
+    try {
+      useContextStore.getState().saveSessionAgentSelection(args.sessionId, args.agentName);
+    } catch {
+      // ignore
+    }
+    try {
+      useContextStore.getState().saveAgentModelForSession(args.sessionId, args.agentName, args.providerID, args.modelID);
+    } catch {
+      // ignore
+    }
+    if (args.variant !== undefined) {
+      try {
+        configState.setCurrentVariant(args.variant);
+      } catch {
+        // ignore
+      }
+      try {
+        useContextStore
+          .getState()
+          .saveAgentModelVariantForSession(args.sessionId, args.agentName, args.providerID, args.modelID, args.variant);
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
+  const sendLinkedContextMessage = React.useCallback(async (args: {
+    sessionId: string;
+    issue: GitHubIssue | null;
+    pr: GitHubPullRequestSummary | null;
+    includeDiff: boolean;
+  }) => {
+    if (!projectDirectory || !github) {
+      return;
+    }
+
+    const configState = useConfigStore.getState();
+    const lastUsedProvider = useMessageStore.getState().lastUsedProvider;
+    const defaultModel = resolveDefaultModelSelection();
+    const providerID = defaultModel?.providerID || configState.currentProviderId || lastUsedProvider?.providerID;
+    const modelID = defaultModel?.modelID || configState.currentModelId || lastUsedProvider?.modelID;
+    const agentName = resolveDefaultAgentName() || configState.currentAgentName || undefined;
+
+    if (!providerID || !modelID) {
+      toast.error('No model selected');
+      return;
+    }
+
+    const variant = resolveDefaultVariant(providerID, modelID);
+
+    applySessionModelAndAgentDefaults({
+      sessionId: args.sessionId,
+      providerID,
+      modelID,
+      agentName,
+      variant,
+    });
+
+    if (args.issue) {
+      if (!github.issueGet || !github.issueComments) {
+        return;
+      }
+
+      const issueRes = await github.issueGet(projectDirectory, args.issue.number);
+      if (issueRes.connected === false || !issueRes.repo || !issueRes.issue) {
+        throw new Error('Failed to load issue context');
+      }
+
+      const commentsRes = await github.issueComments(projectDirectory, args.issue.number);
+      if (commentsRes.connected === false) {
+        throw new Error('Failed to load issue comments');
+      }
+
+      const visiblePromptText = `Review this issue #${args.issue.number} using the provided issue context`;
+      const instructionsText = `Review this issue using the provided issue context: title, body, labels, assignees, comments, metadata.
+
+Process:
+- First classify the issue type (bug / feature request / question/support / refactor / ops) and state it as: Type: <one label>.
+- Gather any needed repository context (code, config, docs) to validate assumptions.
+- After gathering, if anything is still unclear or cannot be verified, do not speculate-state what's missing and ask targeted questions.
+
+Output rules:
+- Compact output; pick ONE template below and omit the others.
+- No emojis. No code snippets. No fenced blocks.
+- Short inline code identifiers allowed.
+- Reference evidence with file paths and line ranges when applicable; if exact lines aren't available, cite the file and say "approx" + why.
+- Keep the entire response under ~300 words.
+
+Templates (choose one):
+Bug:
+- Summary (1-2 sentences)
+- Likely cause (max 2)
+- Repro/diagnostics needed (max 3)
+- Fix approach (max 4 steps)
+- Verification (max 3)
+
+Feature:
+- Summary (1-2 sentences)
+- Requirements (max 4)
+- Unknowns/questions (max 4)
+- Proposed plan (max 5 steps)
+- Verification (max 3)
+
+Question/Support:
+- Summary (1-2 sentences)
+- Answer/guidance (max 6 lines)
+- Missing info (max 4)
+
+Do not implement changes until I confirm; end with: "Next actions: <1 sentence>".`;
+      const contextText = buildIssueContextText({
+        repo: issueRes.repo,
+        issue: issueRes.issue,
+        comments: commentsRes.comments ?? [],
+      });
+
+      await opencodeClient.sendMessage({
+        id: args.sessionId,
+        providerID,
+        modelID,
+        agent: agentName,
+        variant,
+        text: visiblePromptText,
+        additionalParts: [
+          { text: instructionsText, synthetic: true },
+          { text: contextText, synthetic: true },
+        ],
+      });
+
+      toast.success('Session created from issue');
+      return;
+    }
+
+    if (args.pr) {
+      if (!github.prContext) {
+        return;
+      }
+
+      const prContext = await github.prContext(projectDirectory, args.pr.number, {
+        includeDiff: args.includeDiff,
+        includeCheckDetails: false,
+      });
+      if (prContext.connected === false || !prContext.repo || !prContext.pr) {
+        throw new Error('Failed to load PR context');
+      }
+
+      const visiblePromptText = `Review this pull request #${args.pr.number} using the provided PR context`;
+      const instructionsText = `Before reporting issues:
+- First identify the PR intent (what it's trying to achieve) from title/body/diff, then evaluate whether the implementation matches that intent; call out missing pieces, incorrect behavior vs intent, and scope creep.
+- Gather any needed repository context (code, config, docs) to validate assumptions.
+- No speculation: if something is unclear or cannot be verified, say what's missing and ask for it instead of guessing.
+
+Output rules:
+- Start with a 1-2 sentence summary.
+- Provide a single concise PR review comment.
+- No emojis. No code snippets. No fenced blocks.
+- Short inline code identifiers allowed, but no snippets or fenced blocks.
+- Reference evidence with file paths and line ranges (e.g., path/to/file.ts:120-138). If exact lines aren't available, cite the file and say "approx" + why.
+- Keep the entire comment under ~300 words.
+
+Report:
+- Must-fix issues (blocking)-brief why and a one-line action each.
+- Nice-to-have improvements (optional)-brief why and a one-line action each.
+
+Quality & safety (general):
+- Call out correctness risks, edge cases, performance regressions, security/privacy concerns, and backwards-compatibility risks.
+- Call out missing tests/verification steps and suggest the minimal validation needed.
+- Note readability/maintainability issues when they materially affect future changes.
+
+Applicability (only if relevant):
+- If changes affect multiple components/targets/environments (e.g., client/server, OSs, deployments), state what is affected vs not, and why.
+
+Architecture:
+- Call out breakages, missing implementations across modules/targets, boundary violations, and cross-cutting concerns (errors, logging/observability, accessibility).
+
+Precedence:
+- If local precedent conflicts with best practices, state it and suggest a follow-up task.
+
+Do not implement changes until I confirm; end with a short "Next actions" sentence describing the recommended plan.
+
+Format exactly:
+Must-fix:
+- <issue> - <brief why> - <file:line-range> - Action: <one-line action>
+Nice-to-have:
+- <issue> - <brief why> - <file:line-range> - Action: <one-line action>
+If no issues, write:
+Must-fix:
+- None
+Nice-to-have:
+- None`;
+      const contextText = buildPullRequestContextText(prContext);
+
+      await opencodeClient.sendMessage({
+        id: args.sessionId,
+        providerID,
+        modelID,
+        agent: agentName,
+        variant,
+        text: visiblePromptText,
+        additionalParts: [
+          { text: instructionsText, synthetic: true },
+          { text: contextText, synthetic: true },
+        ],
+      });
+
+      toast.success('Session created from PR');
+    }
+  }, [
+    applySessionModelAndAgentDefaults,
+    github,
+    projectDirectory,
+    resolveDefaultAgentName,
+    resolveDefaultModelSelection,
+    resolveDefaultVariant,
+  ]);
 
   // Get current state based on mode
   const currentState = mode === 'new-branch' ? newBranchState : existingBranchState;
@@ -284,7 +594,7 @@ export function NewWorktreeDialog({
 
   // Validation - only runs after fields are touched
   const validateInputs = React.useCallback(async () => {
-    if (!projectRef || !validation.touched) return;
+    if (!projectRef || !validation.touched || isCreating) return;
     
     // Cancel previous validation
     if (validationAbortController) {
@@ -305,7 +615,7 @@ export function NewWorktreeDialog({
       let branchError: string | null = null;
       let worktreeError: string | null = null;
       
-      if (!normalizedBranch && mode !== 'existing-branch') {
+      if (!normalizedBranch) {
         branchError = 'Branch name is required';
       }
       
@@ -314,7 +624,7 @@ export function NewWorktreeDialog({
       }
       
       // Only run server validation if we have values
-      if ((normalizedBranch || mode === 'existing-branch') && normalizedWorktree) {
+      if (normalizedBranch && normalizedWorktree) {
         const result = await validateWorktreeCreate(projectRef, {
           mode: mode === 'existing-branch' ? 'existing' : 'new',
           branchName: normalizedBranch,
@@ -325,11 +635,14 @@ export function NewWorktreeDialog({
         if (abortController.signal.aborted) return;
         
         if (!result.ok) {
-          result.errors.forEach(error => {
-            if (error.code === 'branch_in_use' || error.code === 'branch_exists') {
-              branchError = error.message;
-            } else if (error.code === 'worktree_exists') {
-              worktreeError = error.message;
+          result.errors.forEach((error) => {
+            if (error.code === 'worktree_exists') {
+              worktreeError = worktreeError ?? error.message;
+              return;
+            }
+
+            if (error.code.startsWith('branch_')) {
+              branchError = branchError ?? error.message;
             }
           });
         }
@@ -351,21 +664,30 @@ export function NewWorktreeDialog({
         }));
       }
     }
-  }, [projectRef, mode, newBranchState.branchName, existingBranchState.selectedBranch, currentState.worktreeName, validation.touched, validationAbortController]);
+  }, [
+    projectRef,
+    mode,
+    newBranchState.branchName,
+    existingBranchState.selectedBranch,
+    currentState.worktreeName,
+    validation.touched,
+    validationAbortController,
+    isCreating,
+  ]);
 
   // Extract branch name for dependency array
   const currentBranchName = mode === 'new-branch' ? newBranchState.branchName : existingBranchState.selectedBranch;
 
   // Trigger validation on input changes (only after touched)
   React.useEffect(() => {
-    if (!open || !projectRef || !validation.touched) return;
+    if (!open || !projectRef || !validation.touched || isCreating) return;
     
     const timer = setTimeout(() => {
       void validateInputs();
     }, 300);
     
     return () => clearTimeout(timer);
-  }, [currentState.worktreeName, currentBranchName, open, projectRef, validateInputs, validation.touched]);
+  }, [currentState.worktreeName, currentBranchName, open, projectRef, validateInputs, validation.touched, isCreating]);
 
   // Handle worktree creation
   const handleCreate = async () => {
@@ -382,7 +704,7 @@ export function NewWorktreeDialog({
     const normalizedBranch = normalizeBranchName(branchName);
     const normalizedWorktree = slugifyWorktreeName(worktreeName);
     
-    if (!normalizedBranch && mode !== 'existing-branch') {
+    if (!normalizedBranch) {
       toast.error('Branch name is required');
       return;
     }
@@ -391,6 +713,18 @@ export function NewWorktreeDialog({
       toast.error('Worktree directory is required');
       return;
     }
+
+    if (validationAbortController) {
+      validationAbortController.abort();
+      setValidationAbortController(null);
+    }
+
+    setValidation((prev) => ({
+      ...prev,
+      isValidating: false,
+      branchError: null,
+      worktreeError: null,
+    }));
     
     setIsCreating(true);
     
@@ -414,6 +748,34 @@ export function NewWorktreeDialog({
       
       const resolvedArgs = await withWorktreeUpstreamDefaults(projectDirectory, args);
       const metadata = await createWorktree(projectRef, resolvedArgs);
+
+      const linkedIssue = mode === 'new-branch' ? newBranchState.linkedIssue : null;
+      const linkedPr = mode === 'new-branch' ? newBranchState.linkedPr : null;
+      const includePrDiff = mode === 'new-branch' ? newBranchState.includePrDiff : false;
+
+      let createdSessionId: string | null = null;
+
+      if (linkedIssue || linkedPr) {
+        const sessionTitle = linkedIssue
+          ? `#${linkedIssue.number} ${linkedIssue.title}`.trim()
+          : linkedPr
+            ? `#${linkedPr.number} ${linkedPr.title}`.trim()
+            : 'New session';
+
+        const session = await useSessionStore.getState().createSession(sessionTitle, metadata.path, null);
+        if (!session?.id) {
+          throw new Error('Failed to create session');
+        }
+
+        createdSessionId = session.id;
+        void useSessionStore.getState().updateSessionTitle(session.id, sessionTitle).catch(() => undefined);
+
+        try {
+          useSessionStore.getState().initializeNewOpenChamberSession(session.id, useConfigStore.getState().agents);
+        } catch {
+          // ignore
+        }
+      }
       
       // Save source branch preference (only if not from PR)
       if (newBranchState.sourceBranch && mode === 'new-branch' && !newBranchState.linkedPr) {
@@ -423,9 +785,29 @@ export function NewWorktreeDialog({
       toast.success('Worktree created', {
         description: `${metadata.branch || metadata.name}${effectiveSourceBranch ? ` from ${effectiveSourceBranch}` : ''}`,
       });
+
+      try {
+        await loadSessions();
+      } catch {
+        // best effort
+      }
       
       onOpenChange(false);
-      onWorktreeCreated?.(metadata.path);
+
+      if (createdSessionId) {
+        onWorktreeCreated?.(metadata.path, { sessionId: createdSessionId });
+        void sendLinkedContextMessage({
+          sessionId: createdSessionId,
+          issue: linkedIssue,
+          pr: linkedPr,
+          includeDiff: includePrDiff,
+        }).catch((error) => {
+          const message = error instanceof Error ? error.message : 'Failed to send GitHub context';
+          toast.error('Failed to send GitHub context', { description: message });
+        });
+      } else {
+        onWorktreeCreated?.(metadata.path);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create worktree';
       toast.error('Failed to create worktree', { description: message });
@@ -513,11 +895,7 @@ export function NewWorktreeDialog({
           <>
             <RiErrorWarningLine className="h-3.5 w-3.5" />
             <span className="typography-micro">
-              {validation.branchError && validation.worktreeError 
-                ? 'Branch and Directory are required'
-                : validation.branchError 
-                  ? 'Branch is required' 
-                  : 'Directory is required'}
+              {validation.branchError || validation.worktreeError}
             </span>
           </>
         )}
@@ -1249,11 +1627,7 @@ export function NewWorktreeDialog({
                   <>
                     <RiErrorWarningLine className="h-3.5 w-3.5" />
                     <span className="typography-micro">
-                      {validation.branchError && validation.worktreeError 
-                        ? 'Branch and Directory are required'
-                        : validation.branchError 
-                          ? 'Branch is required' 
-                          : 'Directory is required'}
+                      {validation.branchError || validation.worktreeError}
                     </span>
                   </>
                 )}

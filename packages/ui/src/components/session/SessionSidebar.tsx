@@ -3365,10 +3365,14 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
       <NewWorktreeDialog
         open={newWorktreeDialogOpen}
         onOpenChange={setNewWorktreeDialogOpen}
-        onWorktreeCreated={(worktreePath) => {
+        onWorktreeCreated={(worktreePath, options) => {
           setActiveMainTab('chat');
           if (mobileVariant) {
             setSessionSwitcherOpen(false);
+          }
+          if (options?.sessionId) {
+            setCurrentSession(options.sessionId);
+            return;
           }
           openNewSessionDraft({ directoryOverride: worktreePath });
         }}
