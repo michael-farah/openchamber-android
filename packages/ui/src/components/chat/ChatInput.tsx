@@ -169,7 +169,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
         [attachedFiles],
     );
 
-    const hasInlineFileMention = React.useMemo(() => {
+    const hasInlineMentionForHighlight = React.useMemo(() => {
         if (!message || !message.includes('@') || inputMode === 'shell') {
             return false;
         }
@@ -183,8 +183,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
                 continue;
             }
             const mentionPath = String(match[1] || '').trim().replace(/[),.;:!?`"'>]+$/g, '');
-            if (!mentionPath || knownAgentNames.has(mentionPath.toLowerCase())) {
+            if (!mentionPath) {
                 continue;
+            }
+            if (knownAgentNames.has(mentionPath.toLowerCase())) {
+                return true;
             }
             if (mentionPath.includes('/') || mentionPath.includes('\\') || mentionPath.includes('.')) {
                 return true;
@@ -194,11 +197,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
     }, [agents, inputMode, message]);
 
     const highlightedComposerContent = React.useMemo(() => {
-        if (!hasInlineFileMention) {
+        if (!hasInlineMentionForHighlight) {
             return null;
         }
 
-        const parts: Array<{ text: string; fileMention: boolean }> = [];
+        const parts: Array<{ text: string; mentionKind: 'none' | 'file' | 'agent' }> = [];
         const knownAgentNames = new Set(agents.map((agent) => agent.name.toLowerCase()));
         const mentionRegex = /@([^\s]+)/g;
         let lastIndex = 0;
@@ -211,24 +214,28 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
             const end = start + full.length;
             const charBefore = start > 0 ? message[start - 1] : null;
             const isBoundary = !charBefore || /(\s|\(|\)|\[|\]|\{|\}|"|'|`|,|\.|;|:)/.test(charBefore);
+            const isAgentMention = isBoundary && mention.length > 0 && knownAgentNames.has(mention.toLowerCase());
             const isFileMention = isBoundary
                 && mention.length > 0
                 && !knownAgentNames.has(mention.toLowerCase())
                 && (mention.includes('/') || mention.includes('\\') || mention.includes('.'));
 
             if (start > lastIndex) {
-                parts.push({ text: message.slice(lastIndex, start), fileMention: false });
+                parts.push({ text: message.slice(lastIndex, start), mentionKind: 'none' });
             }
-            parts.push({ text: full, fileMention: isFileMention });
+            parts.push({
+                text: full,
+                mentionKind: isFileMention ? 'file' : isAgentMention ? 'agent' : 'none',
+            });
             lastIndex = end;
         }
 
         if (lastIndex < message.length) {
-            parts.push({ text: message.slice(lastIndex), fileMention: false });
+            parts.push({ text: message.slice(lastIndex), mentionKind: 'none' });
         }
 
         return parts;
-    }, [agents, hasInlineFileMention, message]);
+    }, [agents, hasInlineMentionForHighlight, message]);
 
     const sanitizeAttachmentsForSend = React.useCallback(
         (files: AttachedFile[] | undefined): AttachedFile[] => (files ?? [])
@@ -2580,7 +2587,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
                                 {highlightedComposerContent.map((part, index) => (
                                     <span
                                         key={`${index}-${part.text.length}`}
-                                        className={part.fileMention ? 'text-[var(--status-info)]' : 'text-foreground'}
+                                        className={
+                                            part.mentionKind === 'file'
+                                                ? 'text-[var(--status-info)]'
+                                                : part.mentionKind === 'agent'
+                                                    ? 'text-[var(--status-success)]'
+                                                    : 'text-foreground'
+                                        }
                                     >
                                         {part.text}
                                     </span>
