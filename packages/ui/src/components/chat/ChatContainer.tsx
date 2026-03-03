@@ -327,7 +327,7 @@ export const ChatContainer: React.FC = () => {
         trimToViewportWindow,
     });
 
-    React.useEffect(() => {
+    React.useLayoutEffect(() => {
         const container = scrollRef.current;
         if (!container) {
             return;
