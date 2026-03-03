@@ -18,6 +18,7 @@ import type { ToolPopupContent } from './message/types';
 import { useUIStore } from '@/stores/useUIStore';
 import { useDeviceInfo } from '@/lib/device';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 
 const withStableStringId = <T extends object>(value: T, id: string): T => {
   const existingPrimitive = (value as Record<symbol, unknown>)[Symbol.toPrimitive];
@@ -687,8 +688,6 @@ const FILE_LINK_SELECTOR = '[data-openchamber-file-link="true"]';
 
 type ParsedFileReference = {
   path: string;
-  line?: number;
-  column?: number;
 };
 
 const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
@@ -702,6 +701,9 @@ const KNOWN_FILE_BASENAMES = new Set([
   '.gitignore',
   '.npmrc',
 ]);
+const KNOWN_BASENAME_PATTERN = Array.from(KNOWN_FILE_BASENAMES)
+  .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join('|');
 
 const normalizePath = (value: string): string => {
   const source = (value || '').trim();
@@ -796,40 +798,36 @@ const trimPathCandidate = (value: string): string => {
   return next;
 };
 
+const stripTrailingReference = (value: string): string => {
+  let next = trimPathCandidate(value);
+  if (!next) {
+    return '';
+  }
+
+  const hashOrSemicolonIndex = next.search(/[;#]/);
+  if (hashOrSemicolonIndex >= 0) {
+    next = next.slice(0, hashOrSemicolonIndex);
+  }
+
+  const extensionSuffixMatch = next.match(/^(.*\.[A-Za-z0-9_-]{1,16}):.*$/);
+  if (extensionSuffixMatch) {
+    next = extensionSuffixMatch[1] ?? next;
+  }
+
+  const basenameSuffixMatch = KNOWN_BASENAME_PATTERN.length > 0
+    ? next.match(new RegExp(`^(.*(?:/|^)(${KNOWN_BASENAME_PATTERN})):.*$`, 'i'))
+    : null;
+  if (basenameSuffixMatch) {
+    next = basenameSuffixMatch[1] ?? next;
+  }
+
+  return trimPathCandidate(next);
+};
+
 const parseFileReference = (value: string): ParsedFileReference | null => {
-  const trimmed = trimPathCandidate(value);
+  const trimmed = stripTrailingReference(value);
   if (!trimmed) {
     return null;
-  }
-
-  const hashMatch = trimmed.match(/^(.*)#L(\d+)(?:C(\d+))?$/i);
-  if (hashMatch) {
-    const path = trimPathCandidate(hashMatch[1] ?? '');
-    const line = Number.parseInt(hashMatch[2] ?? '', 10);
-    const column = hashMatch[3] ? Number.parseInt(hashMatch[3], 10) : undefined;
-    if (!path || !Number.isFinite(line)) {
-      return null;
-    }
-    return {
-      path,
-      line,
-      column: Number.isFinite(column ?? NaN) ? column : undefined,
-    };
-  }
-
-  const colonMatch = trimmed.match(/^(.*):(\d+)(?::(\d+))?$/);
-  if (colonMatch) {
-    const path = trimPathCandidate(colonMatch[1] ?? '');
-    const line = Number.parseInt(colonMatch[2] ?? '', 10);
-    const column = colonMatch[3] ? Number.parseInt(colonMatch[3], 10) : undefined;
-    if (!path || !Number.isFinite(line)) {
-      return null;
-    }
-    return {
-      path,
-      line,
-      column: Number.isFinite(column ?? NaN) ? column : undefined,
-    };
   }
 
   return { path: trimmed };
@@ -883,6 +881,25 @@ const extractPathCandidateFromElement = (element: HTMLElement): string => {
   return (element.textContent || '').trim();
 };
 
+const getResolvedReference = (rawValue: string, effectiveDirectory: string): (ParsedFileReference & { resolvedPath: string }) | null => {
+  const parsed = parseFileReference(rawValue);
+  if (!parsed || !isLikelyFilePath(rawValue)) {
+    return null;
+  }
+
+  const resolvedPath = isAbsolutePath(parsed.path)
+    ? normalizePath(parsed.path)
+    : toAbsolutePath(effectiveDirectory, parsed.path);
+  if (!resolvedPath) {
+    return null;
+  }
+
+  return {
+    ...parsed,
+    resolvedPath,
+  };
+};
+
 const getContextDirectory = (effectiveDirectory: string, resolvedPath: string): string => {
   const normalizedDirectory = normalizePath(effectiveDirectory);
   if (normalizedDirectory) {
@@ -897,67 +914,169 @@ const getContextDirectory = (effectiveDirectory: string, resolvedPath: string): 
 const useFileReferenceInteractions = ({
   containerRef,
   effectiveDirectory,
+  readFile,
 }: {
   containerRef: React.RefObject<HTMLDivElement | null>;
   effectiveDirectory: string;
+  readFile?: (path: string) => Promise<{ content: string; path: string }>;
 }) => {
+  const validationCacheRef = React.useRef<Map<string, boolean>>(new Map());
+  const inFlightValidationsRef = React.useRef<Map<string, Promise<boolean>>>(new Map());
+  const annotationPassRef = React.useRef(0);
+  const annotationDebounceRef = React.useRef<number | null>(null);
+  const isValidationSweepRunningRef = React.useRef(false);
+
   React.useEffect(() => {
     const container = containerRef.current;
     if (!container) {
       return;
     }
 
-    const annotateFileLinks = () => {
-      const candidates = container.querySelectorAll<HTMLElement>('[data-streamdown="inline-code"], a');
-      candidates.forEach((candidate) => {
-        const rawCandidate = extractPathCandidateFromElement(candidate);
-        const isFileRef = isLikelyFilePath(rawCandidate);
+    let disposed = false;
 
-        if (!isFileRef) {
-          candidate.removeAttribute('data-openchamber-file-link');
-          candidate.removeAttribute('data-openchamber-file-ref');
-          if (candidate.getAttribute('title') === 'Open file') {
-            candidate.removeAttribute('title');
+    const isPathResolvable = async (resolvedPath: string): Promise<boolean> => {
+      const cache = validationCacheRef.current;
+      if (cache.has(resolvedPath)) {
+        return cache.get(resolvedPath) === true;
+      }
+
+      const inFlight = inFlightValidationsRef.current.get(resolvedPath);
+      if (inFlight) {
+        return inFlight;
+      }
+
+      const checkPromise = (async () => {
+        try {
+          if (!readFile) {
+            return false;
           }
-          if (candidate.tagName.toLowerCase() !== 'a') {
-            candidate.removeAttribute('role');
-            candidate.removeAttribute('tabindex');
+          await readFile(resolvedPath);
+          cache.set(resolvedPath, true);
+          return true;
+        } catch {
+          cache.set(resolvedPath, false);
+          return false;
+        } finally {
+          inFlightValidationsRef.current.delete(resolvedPath);
+        }
+      })();
+
+      inFlightValidationsRef.current.set(resolvedPath, checkPromise);
+      return checkPromise;
+    };
+
+    const clearCandidateLinkAttrs = (candidate: HTMLElement) => {
+      candidate.removeAttribute('data-openchamber-file-link');
+      candidate.removeAttribute('data-openchamber-file-ref');
+      candidate.removeAttribute('data-openchamber-file-path');
+      if (candidate.getAttribute('title') === 'Open file') {
+        candidate.removeAttribute('title');
+      }
+      if (candidate.tagName.toLowerCase() !== 'a') {
+        candidate.removeAttribute('role');
+        candidate.removeAttribute('tabindex');
+      }
+    };
+
+    const applyCandidateLinkAttrs = (candidate: HTMLElement, rawCandidate: string, resolvedPath: string) => {
+      candidate.setAttribute('data-openchamber-file-link', 'true');
+      candidate.setAttribute('data-openchamber-file-ref', rawCandidate);
+      candidate.setAttribute('data-openchamber-file-path', resolvedPath);
+      candidate.setAttribute('title', 'Open file');
+      if (candidate.tagName.toLowerCase() !== 'a') {
+        candidate.setAttribute('role', 'button');
+        candidate.setAttribute('tabindex', '0');
+      }
+    };
+
+    const runValidationSweep = async (paths: string[], expectedPassID: number) => {
+      if (isValidationSweepRunningRef.current || paths.length === 0) {
+        return;
+      }
+
+      isValidationSweepRunningRef.current = true;
+      const maxConcurrent = 3;
+      let cursor = 0;
+
+      const worker = async () => {
+        while (!disposed && cursor < paths.length) {
+          const index = cursor;
+          cursor += 1;
+          const pathToCheck = paths[index];
+          if (!pathToCheck) {
+            continue;
           }
+          await isPathResolvable(pathToCheck);
+        }
+      };
+
+      try {
+        await Promise.all(Array.from({ length: Math.min(maxConcurrent, paths.length) }, () => worker()));
+      } finally {
+        isValidationSweepRunningRef.current = false;
+      }
+
+      if (!disposed && annotationPassRef.current === expectedPassID) {
+        void annotateFileLinks();
+      }
+    };
+
+    const annotateFileLinks = async () => {
+      const passID = annotationPassRef.current + 1;
+      annotationPassRef.current = passID;
+      const candidates = container.querySelectorAll<HTMLElement>('[data-streamdown="inline-code"], a');
+      const unresolvedPaths = new Set<string>();
+
+      for (const candidate of Array.from(candidates)) {
+        const rawCandidate = extractPathCandidateFromElement(candidate);
+        const resolved = getResolvedReference(rawCandidate, effectiveDirectory);
+        if (!resolved) {
+          clearCandidateLinkAttrs(candidate);
+          continue;
+        }
+
+        if (annotationPassRef.current !== passID) {
           return;
         }
 
-        candidate.setAttribute('data-openchamber-file-link', 'true');
-        candidate.setAttribute('data-openchamber-file-ref', rawCandidate);
-        candidate.setAttribute('title', 'Open file');
-        if (candidate.tagName.toLowerCase() !== 'a') {
-          candidate.setAttribute('role', 'button');
-          candidate.setAttribute('tabindex', '0');
+        const cachedResult = validationCacheRef.current.get(resolved.resolvedPath);
+        if (cachedResult === true) {
+          applyCandidateLinkAttrs(candidate, rawCandidate, resolved.resolvedPath);
+          continue;
         }
-      });
+
+        clearCandidateLinkAttrs(candidate);
+        if (cachedResult !== false) {
+          unresolvedPaths.add(resolved.resolvedPath);
+        }
+      }
+
+      if (unresolvedPaths.size > 0) {
+        void runValidationSweep(Array.from(unresolvedPaths), passID);
+      }
     };
 
-    const openFileReference = (sourceElement: HTMLElement): boolean => {
+    const openFileReference = async (sourceElement: HTMLElement): Promise<boolean> => {
       const raw = sourceElement.getAttribute('data-openchamber-file-ref') || extractPathCandidateFromElement(sourceElement);
-      const parsed = parseFileReference(raw);
-      if (!parsed || !isLikelyFilePath(raw)) {
+      const resolved = getResolvedReference(raw, effectiveDirectory);
+      if (!resolved) {
         return false;
       }
 
-      const resolvedPath = isAbsolutePath(parsed.path)
-        ? normalizePath(parsed.path)
-        : toAbsolutePath(effectiveDirectory, parsed.path);
-      if (!resolvedPath) {
+      const isResolvable = await isPathResolvable(resolved.resolvedPath);
+      if (!isResolvable) {
+        sourceElement.removeAttribute('data-openchamber-file-link');
+        sourceElement.removeAttribute('data-openchamber-file-ref');
+        sourceElement.removeAttribute('data-openchamber-file-path');
+        if (sourceElement.getAttribute('title') === 'Open file') {
+          sourceElement.removeAttribute('title');
+        }
         return false;
       }
 
-      const contextDirectory = getContextDirectory(effectiveDirectory, resolvedPath);
+      const contextDirectory = getContextDirectory(effectiveDirectory, resolved.resolvedPath);
       const uiStore = useUIStore.getState();
-      if (parsed.line && Number.isFinite(parsed.line)) {
-        uiStore.openContextFileAtLine(contextDirectory, resolvedPath, parsed.line, parsed.column ?? 1);
-        return true;
-      }
-
-      uiStore.openContextFile(contextDirectory, resolvedPath);
+      uiStore.openContextFile(contextDirectory, resolved.resolvedPath);
       return true;
     };
 
@@ -972,12 +1091,10 @@ const useFileReferenceInteractions = ({
         return;
       }
 
-      if (!openFileReference(fileRefElement)) {
-        return;
-      }
-
       event.preventDefault();
       event.stopPropagation();
+
+      void openFileReference(fileRefElement);
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -990,18 +1107,26 @@ const useFileReferenceInteractions = ({
         return;
       }
 
-      if (!openFileReference(target)) {
-        return;
-      }
-
       event.preventDefault();
       event.stopPropagation();
+
+      void openFileReference(target);
     };
 
-    annotateFileLinks();
+    void annotateFileLinks();
 
     const observer = new MutationObserver(() => {
-      annotateFileLinks();
+      if (annotationDebounceRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(annotationDebounceRef.current);
+      }
+      if (typeof window === 'undefined') {
+        void annotateFileLinks();
+        return;
+      }
+      annotationDebounceRef.current = window.setTimeout(() => {
+        annotationDebounceRef.current = null;
+        void annotateFileLinks();
+      }, 120);
     });
     observer.observe(container, { childList: true, subtree: true, characterData: true });
 
@@ -1009,11 +1134,17 @@ const useFileReferenceInteractions = ({
     container.addEventListener('keydown', handleKeyDown);
 
     return () => {
+      disposed = true;
+      annotationPassRef.current += 1;
+      if (annotationDebounceRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(annotationDebounceRef.current);
+      }
+      annotationDebounceRef.current = null;
       observer.disconnect();
       container.removeEventListener('click', handleClick);
       container.removeEventListener('keydown', handleKeyDown);
     };
-  }, [containerRef, effectiveDirectory]);
+  }, [containerRef, effectiveDirectory, readFile]);
 };
 
 const useMermaidInlineInteractions = ({
@@ -1119,11 +1250,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   variant = 'assistant',
   onShowPopup,
 }) => {
+  const { files } = useRuntimeAPIs();
   const streamdownContainerRef = React.useRef<HTMLDivElement>(null);
   const effectiveDirectory = useEffectiveDirectory() ?? '';
   const mermaidBlocks = React.useMemo(() => extractMermaidBlocks(content), [content]);
   useMermaidInlineInteractions({ containerRef: streamdownContainerRef, mermaidBlocks, onShowPopup });
-  useFileReferenceInteractions({ containerRef: streamdownContainerRef, effectiveDirectory });
+  useFileReferenceInteractions({ containerRef: streamdownContainerRef, effectiveDirectory, readFile: files.readFile });
 
   const shikiThemes = useMarkdownShikiThemes();
   const streamdownPlugins = useStreamdownPlugins(shikiThemes);
@@ -1179,6 +1311,7 @@ export const SimpleMarkdownRenderer: React.FC<{
   onShowPopup,
   allowMermaidWheelZoom = false,
 }) => {
+  const { files } = useRuntimeAPIs();
   const renderedContent = React.useMemo(
     () => (stripFrontmatter ? stripLeadingFrontmatter(content) : content),
     [content, stripFrontmatter],
@@ -1192,7 +1325,7 @@ export const SimpleMarkdownRenderer: React.FC<{
     onShowPopup,
     allowWheelZoom: allowMermaidWheelZoom,
   });
-  useFileReferenceInteractions({ containerRef: streamdownContainerRef, effectiveDirectory });
+  useFileReferenceInteractions({ containerRef: streamdownContainerRef, effectiveDirectory, readFile: files.readFile });
 
   const shikiThemes = useMarkdownShikiThemes();
   const streamdownPlugins = useStreamdownPlugins(shikiThemes);
