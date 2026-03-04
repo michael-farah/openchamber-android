@@ -75,10 +75,23 @@ function buildTunnelUrl(baseUrl, password, includePassword) {
   return url.toString();
 }
 
-function parseArgs() {
-  const args = process.argv.slice(2);
+function parseArgs(argv = process.argv.slice(2)) {
+  const args = Array.isArray(argv) ? [...argv] : [];
   const envPassword = process.env.OPENCHAMBER_UI_PASSWORD || undefined;
-  const options = { port: DEFAULT_PORT, daemon: false, uiPassword: envPassword, tryCfTunnel: false, tunnelQr: false, tunnelPasswordUrl: false };
+  const options = {
+    port: DEFAULT_PORT,
+    daemon: false,
+    uiPassword: envPassword,
+    tryCfTunnel: false,
+    tunnelQr: false,
+    tunnelPasswordUrl: false,
+    tunnelProvider: undefined,
+    tunnelMode: undefined,
+    tunnelConfigPath: undefined,
+    tunnelToken: undefined,
+    tunnelHostname: undefined,
+  };
+  const warnings = [];
   let command = 'serve';
 
   const consumeValue = (currentIndex, inlineValue) => {
@@ -123,7 +136,48 @@ function parseArgs() {
           break;
         case 'try-cf-tunnel':
           options.tryCfTunnel = true;
+          if (!warnings.includes('`--try-cf-tunnel` is deprecated; use `--tunnel-provider cloudflare --tunnel-mode quick`')) {
+            warnings.push('`--try-cf-tunnel` is deprecated; use `--tunnel-provider cloudflare --tunnel-mode quick`');
+          }
           break;
+        case 'tunnel': {
+          const { value, nextIndex } = consumeValue(i, inlineValue);
+          i = nextIndex;
+          options.tunnelProvider = 'cloudflare';
+          options.tunnelMode = 'managed-local';
+          options.tunnelConfigPath = typeof value === 'string' ? value : null;
+          break;
+        }
+        case 'tunnel-provider': {
+          const { value, nextIndex } = consumeValue(i, inlineValue);
+          i = nextIndex;
+          options.tunnelProvider = typeof value === 'string' ? value : options.tunnelProvider;
+          break;
+        }
+        case 'tunnel-mode': {
+          const { value, nextIndex } = consumeValue(i, inlineValue);
+          i = nextIndex;
+          options.tunnelMode = typeof value === 'string' ? value : options.tunnelMode;
+          break;
+        }
+        case 'tunnel-config': {
+          const { value, nextIndex } = consumeValue(i, inlineValue);
+          i = nextIndex;
+          options.tunnelConfigPath = typeof value === 'string' ? value : null;
+          break;
+        }
+        case 'tunnel-token': {
+          const { value, nextIndex } = consumeValue(i, inlineValue);
+          i = nextIndex;
+          options.tunnelToken = typeof value === 'string' ? value : options.tunnelToken;
+          break;
+        }
+        case 'tunnel-hostname': {
+          const { value, nextIndex } = consumeValue(i, inlineValue);
+          i = nextIndex;
+          options.tunnelHostname = typeof value === 'string' ? value : options.tunnelHostname;
+          break;
+        }
         case 'tunnel-qr':
           options.tunnelQr = true;
           break;
@@ -152,7 +206,7 @@ function parseArgs() {
     }
   }
 
-  return { command, options };
+  return { command, options, warnings };
 }
 
 function showHelp() {
@@ -172,7 +226,13 @@ COMMANDS:
 OPTIONS:
   -p, --port              Web server port (default: ${DEFAULT_PORT})
   --ui-password           Protect browser UI with single password
-  --try-cf-tunnel         Create a Cloudflare Quick Tunnel for remote access
+  --tunnel-provider       Tunnel provider (default: cloudflare)
+  --tunnel-mode           Tunnel mode: quick | managed-remote | managed-local
+  --tunnel-config         Managed-local config path (optional; default cloudflared config when omitted)
+  --tunnel-token          Managed-remote token
+  --tunnel-hostname       Managed tunnel hostname
+  --tunnel                Shorthand for --tunnel-provider cloudflare --tunnel-mode managed-local
+  --try-cf-tunnel         (Deprecated) Create a Cloudflare Quick Tunnel for remote access
   --tunnel-qr             Display QR code for tunnel URL (use with --try-cf-tunnel)
   --tunnel-password-url   Include password in tunnel URL for auto-login
   -d, --daemon            Run in background (serve command)
@@ -189,7 +249,9 @@ EXAMPLES:
   openchamber                    # Start on default port 3000 (or a free port)
   openchamber --port 8080        # Start on port 8080
   openchamber serve --daemon     # Start in background
-  openchamber --try-cf-tunnel    # Start with Cloudflare Quick Tunnel
+  openchamber --tunnel-provider cloudflare --tunnel-mode quick
+  openchamber --tunnel-provider cloudflare --tunnel-mode managed-local --tunnel-config
+  openchamber --tunnel ~/.cloudflared/config.yml
   openchamber stop               # Stop all running instances
   openchamber stop --port 3000   # Stop specific instance
   openchamber status             # Check status
@@ -423,12 +485,22 @@ function writeInstanceOptions(instanceFilePath, options) {
     const toStore = {
       port: options.port,
       daemon: options.daemon || false,
+      tryCfTunnel: options.tryCfTunnel === true,
+      tunnelProvider: typeof options.tunnelProvider === 'string' ? options.tunnelProvider : undefined,
+      tunnelMode: typeof options.tunnelMode === 'string' ? options.tunnelMode : undefined,
+      tunnelConfigPath: options.tunnelConfigPath === null
+        ? null
+        : (typeof options.tunnelConfigPath === 'string' ? options.tunnelConfigPath : undefined),
+      tunnelHostname: typeof options.tunnelHostname === 'string' ? options.tunnelHostname : undefined,
       // Store password existence but not value - will use env var
       hasUiPassword: typeof options.uiPassword === 'string',
     };
     // For daemon mode, we need to store the password to restart properly
     if (options.daemon && typeof options.uiPassword === 'string') {
       toStore.uiPassword = options.uiPassword;
+    }
+    if (options.daemon && typeof options.tunnelToken === 'string') {
+      toStore.tunnelToken = options.tunnelToken;
     }
     fs.writeFileSync(instanceFilePath, JSON.stringify(toStore, null, 2));
   } catch (error) {
@@ -501,10 +573,43 @@ const commands = {
 
     const serverPath = path.join(__dirname, '..', 'server', 'index.js');
 
+    const normalizedTunnelProvider = typeof options.tunnelProvider === 'string' && options.tunnelProvider.trim().length > 0
+      ? options.tunnelProvider.trim().toLowerCase()
+      : undefined;
+    const normalizedTunnelMode = typeof options.tunnelMode === 'string' && options.tunnelMode.trim().length > 0
+      ? options.tunnelMode.trim().toLowerCase()
+      : undefined;
+    const hasCanonicalTunnelOptions = Boolean(
+      normalizedTunnelProvider
+      || normalizedTunnelMode
+      || options.tunnelConfigPath === null
+      || typeof options.tunnelConfigPath === 'string'
+      || typeof options.tunnelToken === 'string'
+      || typeof options.tunnelHostname === 'string'
+    );
+
+    const startupTunnel = hasCanonicalTunnelOptions
+      ? {
+          provider: normalizedTunnelProvider || 'cloudflare',
+          mode: normalizedTunnelMode || 'quick',
+          configPath: options.tunnelConfigPath,
+          token: typeof options.tunnelToken === 'string' ? options.tunnelToken.trim() : '',
+          hostname: typeof options.tunnelHostname === 'string' ? options.tunnelHostname.trim() : '',
+        }
+      : (options.tryCfTunnel
+        ? {
+            provider: 'cloudflare',
+            mode: 'quick',
+            configPath: undefined,
+            token: '',
+            hostname: '',
+          }
+        : null);
+
     let effectiveUiPassword = options.uiPassword;
     let showAutoGeneratedPassword = false;
 
-    if (options.tryCfTunnel && typeof effectiveUiPassword !== 'string') {
+    if (startupTunnel && typeof effectiveUiPassword !== 'string') {
       effectiveUiPassword = generateRandomPassword(16);
       showAutoGeneratedPassword = true;
     }
@@ -515,6 +620,21 @@ const commands = {
     }
     if (options.tryCfTunnel) {
       serverArgs.push('--try-cf-tunnel');
+    }
+    if (startupTunnel) {
+      serverArgs.push('--tunnel-provider', startupTunnel.provider);
+      serverArgs.push('--tunnel-mode', startupTunnel.mode);
+      if (startupTunnel.configPath === null) {
+        serverArgs.push('--tunnel-config');
+      } else if (typeof startupTunnel.configPath === 'string' && startupTunnel.configPath.trim().length > 0) {
+        serverArgs.push('--tunnel-config', startupTunnel.configPath.trim());
+      }
+      if (startupTunnel.token) {
+        serverArgs.push('--tunnel-token', startupTunnel.token);
+      }
+      if (startupTunnel.hostname) {
+        serverArgs.push('--tunnel-hostname', startupTunnel.hostname);
+      }
     }
 
     const preferredRuntime = getPreferredServerRuntime();
@@ -530,6 +650,14 @@ const commands = {
           OPENCODE_BINARY: opencodeBinary,
           ...(typeof effectiveUiPassword === 'string' ? { OPENCHAMBER_UI_PASSWORD: effectiveUiPassword } : {}),
           OPENCHAMBER_TRY_CF_TUNNEL: options.tryCfTunnel ? 'true' : 'false',
+          ...(startupTunnel ? {
+            OPENCHAMBER_TUNNEL_PROVIDER: startupTunnel.provider,
+            OPENCHAMBER_TUNNEL_MODE: startupTunnel.mode,
+            ...(startupTunnel.configPath === null ? { OPENCHAMBER_TUNNEL_CONFIG: '' } : {}),
+            ...(typeof startupTunnel.configPath === 'string' ? { OPENCHAMBER_TUNNEL_CONFIG: startupTunnel.configPath } : {}),
+            ...(startupTunnel.token ? { OPENCHAMBER_TUNNEL_TOKEN: startupTunnel.token } : {}),
+            ...(startupTunnel.hostname ? { OPENCHAMBER_TUNNEL_HOSTNAME: startupTunnel.hostname } : {}),
+          } : {}),
           ...(process.env.OPENCODE_SKIP_START ? { OPENCHAMBER_SKIP_OPENCODE_START: process.env.OPENCODE_SKIP_START } : {}),
         }
       });
@@ -618,6 +746,14 @@ const commands = {
           OPENCODE_BINARY: opencodeBinary,
           ...(typeof effectiveUiPassword === 'string' ? { OPENCHAMBER_UI_PASSWORD: effectiveUiPassword } : {}),
           OPENCHAMBER_TRY_CF_TUNNEL: options.tryCfTunnel ? 'true' : 'false',
+          ...(startupTunnel ? {
+            OPENCHAMBER_TUNNEL_PROVIDER: startupTunnel.provider,
+            OPENCHAMBER_TUNNEL_MODE: startupTunnel.mode,
+            ...(startupTunnel.configPath === null ? { OPENCHAMBER_TUNNEL_CONFIG: '' } : {}),
+            ...(typeof startupTunnel.configPath === 'string' ? { OPENCHAMBER_TUNNEL_CONFIG: startupTunnel.configPath } : {}),
+            ...(startupTunnel.token ? { OPENCHAMBER_TUNNEL_TOKEN: startupTunnel.token } : {}),
+            ...(startupTunnel.hostname ? { OPENCHAMBER_TUNNEL_HOSTNAME: startupTunnel.hostname } : {}),
+          } : {}),
           ...(process.env.OPENCODE_SKIP_START ? { OPENCHAMBER_SKIP_OPENCODE_START: process.env.OPENCODE_SKIP_START } : {}),
         },
       });
@@ -636,6 +772,11 @@ const commands = {
       exitOnShutdown: true,
       uiPassword: typeof effectiveUiPassword === 'string' ? effectiveUiPassword : null,
       tryCfTunnel: options.tryCfTunnel,
+      tunnelProvider: startupTunnel?.provider,
+      tunnelMode: startupTunnel?.mode,
+      tunnelConfigPath: startupTunnel?.configPath,
+      tunnelToken: startupTunnel?.token,
+      tunnelHostname: startupTunnel?.hostname,
       onTunnelReady: async (url, connectUrl) => {
         const displayUrl = connectUrl || buildTunnelUrl(url, effectiveUiPassword, options.tunnelPasswordUrl);
         console.log(`\n🌐 Tunnel URL: \x1b[36m${displayUrl}\x1b[0m\n`);
@@ -836,6 +977,12 @@ const commands = {
         ...(portWasSpecified ? { port: options.port } : {}),
         ...(process.argv.includes('--daemon') || process.argv.includes('-d') ? { daemon: options.daemon } : {}),
         ...(process.argv.includes('--ui-password') ? { uiPassword: options.uiPassword } : {}),
+        ...(process.argv.includes('--try-cf-tunnel') ? { tryCfTunnel: options.tryCfTunnel } : {}),
+        ...(process.argv.includes('--tunnel-provider') ? { tunnelProvider: options.tunnelProvider } : {}),
+        ...(process.argv.includes('--tunnel-mode') ? { tunnelMode: options.tunnelMode } : {}),
+        ...(process.argv.includes('--tunnel-config') || process.argv.includes('--tunnel') ? { tunnelConfigPath: options.tunnelConfigPath } : {}),
+        ...(process.argv.includes('--tunnel-token') ? { tunnelToken: options.tunnelToken } : {}),
+        ...(process.argv.includes('--tunnel-hostname') ? { tunnelHostname: options.tunnelHostname } : {}),
       };
 
       // Stop the instance
@@ -1052,7 +1199,13 @@ const commands = {
 };
 
 async function main() {
-  const { command, options } = parseArgs();
+  const { command, options, warnings } = parseArgs();
+
+  if (Array.isArray(warnings) && warnings.length > 0) {
+    for (const warning of warnings) {
+      console.warn(`Warning: ${warning}`);
+    }
+  }
 
   if (!commands[command]) {
     console.error(`Error: Unknown command '${command}'`);
@@ -1068,16 +1221,30 @@ async function main() {
   }
 }
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  process.exit(1);
-});
+const isCliExecution = (() => {
+  const entry = process.argv[1];
+  if (typeof entry !== 'string' || entry.length === 0) {
+    return false;
+  }
+  try {
+    return pathToFileURL(path.resolve(entry)).href === import.meta.url;
+  } catch {
+    return false;
+  }
+})();
 
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-  process.exit(1);
-});
+if (isCliExecution) {
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    process.exit(1);
+  });
 
-main();
+  process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+    process.exit(1);
+  });
+
+  main();
+}
 
 export { commands, parseArgs, getPidFilePath };

@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import yaml from 'yaml';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,6 +11,9 @@ const __dirname = path.dirname(__filename);
 const TRY_CF_URL_REGEX = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30000;
+const TUNNEL_MODE_QUICK = 'quick';
+const TUNNEL_MODE_MANAGED_REMOTE = 'managed-remote';
+const TUNNEL_MODE_MANAGED_LOCAL = 'managed-local';
 
 async function searchPathFor(command) {
   const pathValue = process.env.PATH || '';
@@ -98,6 +102,48 @@ const spawnCloudflared = (args, envOverrides = {}) => spawn('cloudflared', args,
   killSignal: 'SIGINT',
 });
 
+const normalizeHostname = (value) => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = trimmed.includes('://') ? new URL(trimmed) : new URL(`https://${trimmed}`);
+    const hostname = parsed.hostname.trim().toLowerCase();
+    if (!hostname || hostname.includes('*')) {
+      return null;
+    }
+    return hostname;
+  } catch {
+    return null;
+  }
+};
+
+const extractHostnameFromCloudflaredConfig = (configPath) => {
+  if (typeof configPath !== 'string' || configPath.trim().length === 0) {
+    return null;
+  }
+  try {
+    const raw = fs.readFileSync(configPath, 'utf8');
+    const parsed = yaml.parse(raw);
+    const ingress = Array.isArray(parsed?.ingress) ? parsed.ingress : [];
+    for (const rule of ingress) {
+      const hostname = normalizeHostname(rule?.hostname);
+      if (hostname) {
+        return hostname;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+};
+
+const getDefaultCloudflaredConfigPath = () => path.join(os.homedir(), '.cloudflared', 'config.yml');
+
 export async function startCloudflareQuickTunnel({ originUrl }) {
   const cfCheck = await checkCloudflaredAvailable();
 
@@ -173,7 +219,7 @@ export async function startCloudflareQuickTunnel({ originUrl }) {
   });
 
   return {
-    mode: 'quick',
+    mode: TUNNEL_MODE_QUICK,
     stop: () => {
       try {
         child.kill('SIGINT');
@@ -241,7 +287,7 @@ export async function startCloudflareNamedTunnel({ token, hostname }) {
   });
 
   return {
-    mode: 'named',
+    mode: TUNNEL_MODE_MANAGED_REMOTE,
     stop: () => {
       try {
         child.kill('SIGINT');
@@ -251,6 +297,86 @@ export async function startCloudflareNamedTunnel({ token, hostname }) {
     },
     process: child,
     getPublicUrl: () => publicUrl,
+  };
+}
+
+export async function startCloudflareManagedLocalTunnel({ configPath, hostname }) {
+  const cfCheck = await checkCloudflaredAvailable();
+
+  if (!cfCheck.available) {
+    printCloudflareTunnelInstallHelp();
+    throw new Error('cloudflared is not installed');
+  }
+
+  const requestedPath = typeof configPath === 'string' ? configPath.trim() : '';
+  const effectiveConfigPath = requestedPath || getDefaultCloudflaredConfigPath();
+
+  if (requestedPath && !fs.existsSync(effectiveConfigPath)) {
+    throw new Error(`Managed local tunnel config not found: ${effectiveConfigPath}`);
+  }
+
+  const resolvedHost = normalizeHostname(hostname)
+    || extractHostnameFromCloudflaredConfig(effectiveConfigPath);
+
+  if (!resolvedHost) {
+    throw new Error('Managed local tunnel hostname is required (use --tunnel-hostname or add ingress hostname in config)');
+  }
+
+  const args = ['tunnel'];
+  if (requestedPath) {
+    args.push('--config', effectiveConfigPath);
+  }
+  args.push('run');
+
+  const child = spawnCloudflared(args);
+  const publicUrl = `https://${resolvedHost}`;
+
+  let exitedEarly = false;
+  let earlyExitCode = null;
+
+  child.stdout.on('data', () => {
+    // Keep stream drained, but avoid logging potentially sensitive output.
+  });
+
+  child.stderr.on('data', (chunk) => {
+    const text = chunk.toString('utf8');
+    process.stderr.write(text);
+  });
+
+  child.on('error', (error) => {
+    console.error(`Cloudflared error: ${error.message}`);
+  });
+
+  await new Promise((resolve, reject) => {
+    const readyTimer = setTimeout(() => {
+      if (exitedEarly) {
+        reject(new Error(`Cloudflared exited early with code ${earlyExitCode ?? 'unknown'}`));
+      } else {
+        resolve(null);
+      }
+    }, 2000);
+
+    child.once('exit', (code) => {
+      exitedEarly = true;
+      earlyExitCode = code;
+      clearTimeout(readyTimer);
+      reject(new Error(`Cloudflared exited with code ${code ?? 'unknown'}`));
+    });
+  });
+
+  return {
+    mode: TUNNEL_MODE_MANAGED_LOCAL,
+    stop: () => {
+      try {
+        child.kill('SIGINT');
+      } catch {
+        // Ignore
+      }
+    },
+    process: child,
+    getPublicUrl: () => publicUrl,
+    getResolvedHostname: () => resolvedHost,
+    getEffectiveConfigPath: () => effectiveConfigPath,
   };
 }
 

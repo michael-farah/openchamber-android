@@ -11,11 +11,22 @@ import crypto from 'crypto';
 import { createUiAuth } from './lib/opencode/ui-auth.js';
 import { createTunnelAuth } from './lib/opencode/tunnel-auth.js';
 import {
-  startCloudflareQuickTunnel,
-  startCloudflareNamedTunnel,
   printTunnelWarning,
-  checkCloudflaredAvailable,
 } from './lib/cloudflare-tunnel.js';
+import { createTunnelService } from './lib/tunnels/index.js';
+import { createTunnelProviderRegistry } from './lib/tunnels/registry.js';
+import { createCloudflareTunnelProvider } from './lib/tunnels/providers/cloudflare.js';
+import {
+  TUNNEL_MODE_MANAGED_LOCAL,
+  TUNNEL_MODE_MANAGED_REMOTE,
+  TUNNEL_MODE_QUICK,
+  TUNNEL_PROVIDER_CLOUDFLARE,
+  TunnelServiceError,
+  normalizeOptionalPath,
+  normalizeTunnelMode,
+  normalizeTunnelProvider,
+  toLegacyTunnelMode,
+} from './lib/tunnels/types.js';
 import { prepareNotificationLastMessage } from './lib/notifications/index.js';
 import {
   TERMINAL_INPUT_WS_MAX_PAYLOAD_BYTES,
@@ -48,8 +59,6 @@ const TUNNEL_BOOTSTRAP_TTL_MAX_MS = 24 * 60 * 60 * 1000;
 const TUNNEL_SESSION_TTL_DEFAULT_MS = 8 * 60 * 60 * 1000;
 const TUNNEL_SESSION_TTL_MIN_MS = 5 * 60 * 1000;
 const TUNNEL_SESSION_TTL_MAX_MS = 24 * 60 * 60 * 1000;
-const TUNNEL_MODE_QUICK = 'quick';
-const TUNNEL_MODE_NAMED = 'named';
 const OPENCHAMBER_VERSION = (() => {
   try {
     const packagePath = path.resolve(__dirname, '..', 'package.json');
@@ -125,17 +134,6 @@ const normalizeTunnelSessionTtlMs = (value) => {
     return TUNNEL_SESSION_TTL_DEFAULT_MS;
   }
   return clampNumber(Math.round(value), TUNNEL_SESSION_TTL_MIN_MS, TUNNEL_SESSION_TTL_MAX_MS);
-};
-
-const normalizeTunnelMode = (value) => {
-  if (typeof value !== 'string') {
-    return TUNNEL_MODE_QUICK;
-  }
-  const mode = value.trim().toLowerCase();
-  if (mode === TUNNEL_MODE_NAMED) {
-    return TUNNEL_MODE_NAMED;
-  }
-  return TUNNEL_MODE_QUICK;
 };
 
 const normalizeNamedTunnelHostname = (value) => {
@@ -3377,6 +3375,9 @@ let isExternalOpenCode = false;
 let exitOnShutdown = true;
 let uiAuthController = null;
 let cloudflareTunnelController = null;
+const tunnelProviderRegistry = createTunnelProviderRegistry([
+  createCloudflareTunnelProvider(),
+]);
 const tunnelAuthController = createTunnelAuth();
 let runtimeNamedTunnelToken = '';
 let runtimeNamedTunnelHostname = '';
@@ -5433,7 +5434,25 @@ function parseArgs(argv = process.argv.slice(2)) {
     process.env.OPENCODE_UI_PASSWORD ||
     null;
   const envCfTunnel = process.env.OPENCHAMBER_TRY_CF_TUNNEL === 'true';
-  const options = { port: DEFAULT_PORT, uiPassword: envPassword, tryCfTunnel: envCfTunnel };
+  const envTunnelProvider = process.env.OPENCHAMBER_TUNNEL_PROVIDER || undefined;
+  const envTunnelMode = process.env.OPENCHAMBER_TUNNEL_MODE || undefined;
+  const envTunnelConfigRaw = process.env.OPENCHAMBER_TUNNEL_CONFIG;
+  const envTunnelConfig = typeof envTunnelConfigRaw === 'string'
+    ? (envTunnelConfigRaw.trim().length > 0 ? envTunnelConfigRaw.trim() : null)
+    : undefined;
+  const envTunnelToken = process.env.OPENCHAMBER_TUNNEL_TOKEN || undefined;
+  const envTunnelHostname = process.env.OPENCHAMBER_TUNNEL_HOSTNAME || undefined;
+
+  const options = {
+    port: DEFAULT_PORT,
+    uiPassword: envPassword,
+    tryCfTunnel: envCfTunnel,
+    tunnelProvider: envTunnelProvider,
+    tunnelMode: envTunnelMode,
+    tunnelConfigPath: envTunnelConfig,
+    tunnelToken: envTunnelToken,
+    tunnelHostname: envTunnelHostname,
+  };
 
   const consumeValue = (currentIndex, inlineValue) => {
     if (typeof inlineValue === 'string') {
@@ -5473,6 +5492,50 @@ function parseArgs(argv = process.argv.slice(2)) {
 
     if (optionName === 'try-cf-tunnel') {
       options.tryCfTunnel = true;
+      continue;
+    }
+
+    if (optionName === 'tunnel-provider') {
+      const { value, nextIndex } = consumeValue(i, inlineValue);
+      i = nextIndex;
+      options.tunnelProvider = typeof value === 'string' ? value : options.tunnelProvider;
+      continue;
+    }
+
+    if (optionName === 'tunnel-mode') {
+      const { value, nextIndex } = consumeValue(i, inlineValue);
+      i = nextIndex;
+      options.tunnelMode = typeof value === 'string' ? value : options.tunnelMode;
+      continue;
+    }
+
+    if (optionName === 'tunnel-config') {
+      const { value, nextIndex } = consumeValue(i, inlineValue);
+      i = nextIndex;
+      options.tunnelConfigPath = typeof value === 'string' ? value : null;
+      continue;
+    }
+
+    if (optionName === 'tunnel-token') {
+      const { value, nextIndex } = consumeValue(i, inlineValue);
+      i = nextIndex;
+      options.tunnelToken = typeof value === 'string' ? value : options.tunnelToken;
+      continue;
+    }
+
+    if (optionName === 'tunnel-hostname') {
+      const { value, nextIndex } = consumeValue(i, inlineValue);
+      i = nextIndex;
+      options.tunnelHostname = typeof value === 'string' ? value : options.tunnelHostname;
+      continue;
+    }
+
+    if (optionName === 'tunnel') {
+      const { value, nextIndex } = consumeValue(i, inlineValue);
+      i = nextIndex;
+      options.tunnelProvider = TUNNEL_PROVIDER_CLOUDFLARE;
+      options.tunnelMode = TUNNEL_MODE_MANAGED_LOCAL;
+      options.tunnelConfigPath = typeof value === 'string' ? value : null;
       continue;
     }
   }
@@ -6689,6 +6752,30 @@ async function gracefulShutdown(options = {}) {
 async function main(options = {}) {
   const port = Number.isFinite(options.port) && options.port >= 0 ? Math.trunc(options.port) : DEFAULT_PORT;
   const tryCfTunnel = options.tryCfTunnel === true;
+  const requestedTunnelMode = normalizeTunnelMode(options.tunnelMode);
+  const shouldUseCanonicalTunnelConfig = typeof options.tunnelMode === 'string'
+    || typeof options.tunnelProvider === 'string'
+    || options.tunnelConfigPath === null
+    || typeof options.tunnelConfigPath === 'string'
+    || typeof options.tunnelToken === 'string'
+    || typeof options.tunnelHostname === 'string';
+  const startupTunnelRequest = shouldUseCanonicalTunnelConfig
+    ? {
+        provider: normalizeTunnelProvider(options.tunnelProvider),
+        mode: requestedTunnelMode,
+        configPath: normalizeOptionalPath(options.tunnelConfigPath),
+        token: typeof options.tunnelToken === 'string' ? options.tunnelToken.trim() : '',
+        hostname: normalizeNamedTunnelHostname(options.tunnelHostname),
+      }
+    : (tryCfTunnel
+      ? {
+          provider: TUNNEL_PROVIDER_CLOUDFLARE,
+          mode: TUNNEL_MODE_QUICK,
+          configPath: undefined,
+          token: '',
+          hostname: undefined,
+        }
+      : null);
   const attachSignals = options.attachSignals !== false;
   const onTunnelReady = typeof options.onTunnelReady === 'function' ? options.onTunnelReady : null;
   if (typeof options.exitOnShutdown === 'boolean') {
@@ -7602,11 +7689,76 @@ async function main(options = {}) {
     }
   });
 
+  const tunnelService = createTunnelService({
+    registry: tunnelProviderRegistry,
+    getController: () => cloudflareTunnelController,
+    setController: (controller) => {
+      cloudflareTunnelController = controller;
+    },
+    getActivePort: () => activePort,
+    onQuickTunnelWarning: () => {
+      printTunnelWarning();
+    },
+  });
+
+  const resolveActiveNormalizedTunnelMode = () => {
+    const mode = tunnelService.resolveActiveMode();
+    if (mode === TUNNEL_MODE_MANAGED_LOCAL) {
+      return TUNNEL_MODE_MANAGED_LOCAL;
+    }
+    if (mode === TUNNEL_MODE_MANAGED_REMOTE) {
+      return TUNNEL_MODE_MANAGED_REMOTE;
+    }
+    return TUNNEL_MODE_QUICK;
+  };
+
+  const startTunnelWithNormalizedRequest = async ({
+    provider,
+    mode,
+    namedHostname,
+    namedToken,
+    configPath,
+    selectedPresetId,
+    selectedPresetName,
+  }) => {
+    if (mode === TUNNEL_MODE_MANAGED_REMOTE) {
+      if (!namedHostname) {
+        throw new TunnelServiceError('validation_error', 'Named tunnel hostname is required');
+      }
+      if (!namedToken) {
+        throw new TunnelServiceError('validation_error', 'Named tunnel token is required');
+      }
+
+      runtimeNamedTunnelHostname = namedHostname;
+      runtimeNamedTunnelToken = namedToken;
+
+      if (namedToken && namedHostname) {
+        await upsertNamedTunnelToken({
+          id: selectedPresetId || namedHostname,
+          name: selectedPresetName || namedHostname,
+          hostname: namedHostname,
+          token: namedToken,
+        });
+      }
+    }
+
+    const result = await tunnelService.start({
+      provider,
+      mode,
+      configPath,
+      token: namedToken,
+      hostname: namedHostname,
+    });
+
+    console.log(`Cloudflare tunnel active: ${result.publicUrl}`);
+    return { publicUrl: result.publicUrl, mode: result.activeMode };
+  };
+
   // ── Cloudflare Tunnel API ──────────────────────────────────────────
 
   app.get('/api/openchamber/tunnel/check', async (_req, res) => {
     try {
-      const result = await checkCloudflaredAvailable();
+      const result = await tunnelService.checkAvailability(TUNNEL_PROVIDER_CLOUDFLARE);
       res.json({ available: result.available, version: result.version || null });
     } catch (error) {
       console.warn('Cloudflare tunnel check failed:', error);
@@ -7617,7 +7769,8 @@ async function main(options = {}) {
   app.get('/api/openchamber/tunnel/status', async (_req, res) => {
     try {
       const settings = await readSettingsFromDiskMigrated();
-      const mode = normalizeTunnelMode(settings?.tunnelMode);
+      const normalizedMode = normalizeTunnelMode(settings?.tunnelMode);
+      const legacyMode = toLegacyTunnelMode(normalizedMode);
       const namedHostname = normalizeNamedTunnelHostname(settings?.namedTunnelHostname);
       const namedTunnelConfig = await readNamedTunnelConfigFromDisk();
       const hasLegacyNamedToken = typeof settings?.namedTunnelToken === 'string' && settings.namedTunnelToken.trim().length > 0;
@@ -7633,7 +7786,10 @@ async function main(options = {}) {
         return res.json({
           active: false,
           url: null,
-          mode,
+          mode: normalizedMode,
+          legacyMode,
+          provider: TUNNEL_PROVIDER_CLOUDFLARE,
+          providerMetadata: null,
           hasNamedTunnelToken,
           namedTunnelHostname: namedHostname || null,
           namedTunnelTokenPresetIds: namedTunnelConfig.tunnels.map((entry) => entry.id),
@@ -7650,25 +7806,33 @@ async function main(options = {}) {
         });
       }
 
-      const activeMode = cloudflareTunnelController?.mode === TUNNEL_MODE_NAMED ? TUNNEL_MODE_NAMED : TUNNEL_MODE_QUICK;
+       const activeNormalizedMode = resolveActiveNormalizedTunnelMode();
+       const activeLegacyMode = toLegacyTunnelMode(activeNormalizedMode);
 
-      if (!tunnelAuthController.getActiveTunnelId() || !tunnelAuthController.getActiveTunnelHost()) {
-        tunnelAuthController.setActiveTunnel({ tunnelId: crypto.randomUUID(), publicUrl, mode: activeMode });
-      }
+       if (!tunnelAuthController.getActiveTunnelId() || !tunnelAuthController.getActiveTunnelHost()) {
+         tunnelAuthController.setActiveTunnel({ tunnelId: crypto.randomUUID(), publicUrl, mode: activeNormalizedMode });
+       }
 
       const bootstrapStatus = tunnelAuthController.getBootstrapStatus();
+      const providerMetadata = {
+        configPath: cloudflareTunnelController?.getEffectiveConfigPath?.() ?? null,
+        resolvedHostname: cloudflareTunnelController?.getResolvedHostname?.() ?? null,
+      };
 
       return res.json({
-        active: true,
-        url: publicUrl,
-        mode: activeMode,
-        hasNamedTunnelToken,
+         active: true,
+         url: publicUrl,
+         mode: activeNormalizedMode,
+         legacyMode: activeLegacyMode,
+         provider: TUNNEL_PROVIDER_CLOUDFLARE,
+         providerMetadata,
+         hasNamedTunnelToken,
         namedTunnelHostname: namedHostname || null,
         namedTunnelTokenPresetIds: namedTunnelConfig.tunnels.map((entry) => entry.id),
         hasBootstrapToken: bootstrapStatus.hasBootstrapToken,
         bootstrapExpiresAt: bootstrapStatus.bootstrapExpiresAt,
         policy: 'tunnel-gated',
-        activeTunnelMode: activeMode,
+         activeTunnelMode: activeNormalizedMode,
         activeSessions: tunnelAuthController.listTunnelSessions(),
         localPort: activePort,
         ttlConfig: {
@@ -7709,15 +7873,20 @@ async function main(options = {}) {
   app.post('/api/openchamber/tunnel/start', async (_req, res) => {
     try {
       const settings = await readSettingsFromDiskMigrated();
+      const provider = normalizeTunnelProvider(_req?.body?.provider ?? settings?.tunnelProvider);
       const mode = normalizeTunnelMode(_req?.body?.mode ?? settings?.tunnelMode);
       const selectedPresetId = typeof _req?.body?.namedTunnelPresetId === 'string' ? _req.body.namedTunnelPresetId.trim() : '';
       const selectedPresetName = typeof _req?.body?.namedTunnelPresetName === 'string' ? _req.body.namedTunnelPresetName.trim() : '';
+      const requestConfigPath = normalizeOptionalPath(_req?.body?.configPath);
       const requestNamedHostname = normalizeNamedTunnelHostname(_req?.body?.namedTunnelHostname);
-      const namedHostname = requestNamedHostname || normalizeNamedTunnelHostname(settings?.namedTunnelHostname);
+      const requestTunnelHostname = normalizeNamedTunnelHostname(_req?.body?.tunnelHostname);
+      const namedHostname = requestTunnelHostname || requestNamedHostname || normalizeNamedTunnelHostname(settings?.namedTunnelHostname);
       const requestNamedToken = typeof _req?.body?.namedTunnelToken === 'string' ? _req.body.namedTunnelToken.trim() : '';
+      const requestTunnelToken = typeof _req?.body?.tunnelToken === 'string' ? _req.body.tunnelToken.trim() : '';
       const legacyNamedToken = typeof settings?.namedTunnelToken === 'string' ? settings.namedTunnelToken.trim() : '';
       const configNamedToken = await resolveNamedTunnelToken({ presetId: selectedPresetId, hostname: namedHostname });
-      const namedToken = requestNamedToken
+      const namedToken = requestTunnelToken
+        || requestNamedToken
         || ((runtimeNamedTunnelHostname && namedHostname && runtimeNamedTunnelHostname === namedHostname) ? runtimeNamedTunnelToken : '')
         || configNamedToken
         || legacyNamedToken
@@ -7727,68 +7896,15 @@ async function main(options = {}) {
         : normalizeTunnelBootstrapTtlMs(settings?.tunnelBootstrapTtlMs);
       const sessionTtlMs = normalizeTunnelSessionTtlMs(settings?.tunnelSessionTtlMs);
 
-      let publicUrl = cloudflareTunnelController?.getPublicUrl?.() ?? null;
-      const activeMode = cloudflareTunnelController?.mode === TUNNEL_MODE_NAMED ? TUNNEL_MODE_NAMED : TUNNEL_MODE_QUICK;
-
-      if (publicUrl && activeMode !== mode) {
-        cloudflareTunnelController.stop();
-        cloudflareTunnelController = null;
-        tunnelAuthController.clearActiveTunnel();
-        publicUrl = null;
-      }
-
-      if (!publicUrl) {
-        const cfCheck = await checkCloudflaredAvailable();
-        if (!cfCheck.available) {
-          return res.status(400).json({
-            ok: false,
-            error: 'cloudflared is not installed. Install it with: brew install cloudflared',
-          });
-        }
-
-        if (mode === TUNNEL_MODE_NAMED) {
-          if (!namedHostname) {
-            return res.status(400).json({ ok: false, error: 'Named tunnel hostname is required' });
-          }
-          if (!namedToken) {
-            return res.status(400).json({ ok: false, error: 'Named tunnel token is required' });
-          }
-
-          runtimeNamedTunnelHostname = namedHostname;
-          runtimeNamedTunnelToken = namedToken;
-
-          if (requestNamedToken && namedHostname) {
-            await upsertNamedTunnelToken({
-              id: selectedPresetId || namedHostname,
-              name: selectedPresetName || namedHostname,
-              hostname: namedHostname,
-              token: requestNamedToken,
-            });
-          }
-
-          cloudflareTunnelController = await startCloudflareNamedTunnel({
-            token: namedToken,
-            hostname: namedHostname,
-          });
-        } else {
-          const originUrl = `http://127.0.0.1:${activePort}`;
-          cloudflareTunnelController = await startCloudflareQuickTunnel({ originUrl, port: activePort });
-        }
-
-        publicUrl = cloudflareTunnelController.getPublicUrl();
-
-        if (!publicUrl) {
-          cloudflareTunnelController.stop();
-          cloudflareTunnelController = null;
-          tunnelAuthController.clearActiveTunnel();
-          return res.status(500).json({ ok: false, error: 'Tunnel started but no public URL was assigned' });
-        }
-
-        if (mode === TUNNEL_MODE_QUICK) {
-          printTunnelWarning();
-        }
-        console.log(`Cloudflare tunnel active: ${publicUrl}`);
-      }
+      const { publicUrl } = await startTunnelWithNormalizedRequest({
+        provider,
+        mode,
+        namedHostname,
+        namedToken,
+        configPath: requestConfigPath,
+        selectedPresetId,
+        selectedPresetName,
+      });
 
       if (!tunnelAuthController.getActiveTunnelId() || !tunnelAuthController.getActiveTunnelHost()) {
         tunnelAuthController.setActiveTunnel({ tunnelId: crypto.randomUUID(), publicUrl, mode });
@@ -7802,6 +7918,8 @@ async function main(options = {}) {
         ok: true,
         url: publicUrl,
         mode,
+        legacyMode: toLegacyTunnelMode(mode),
+        provider,
         namedTunnelHostname: namedHostname || null,
         namedTunnelTokenPresetIds: namedTunnelConfig.tunnels.map((entry) => entry.id),
         connectUrl,
@@ -7819,7 +7937,15 @@ async function main(options = {}) {
       console.error('Failed to start Cloudflare tunnel:', error);
       cloudflareTunnelController = null;
       tunnelAuthController.clearActiveTunnel();
-      return res.status(500).json({ ok: false, error: error?.message || 'Failed to start tunnel' });
+      if (error instanceof TunnelServiceError) {
+        const status = error.code === 'missing_dependency'
+          ? 400
+          : (error.code === 'validation_error' || error.code === 'provider_unsupported' || error.code === 'mode_unsupported'
+            ? 422
+            : 500);
+        return res.status(status).json({ ok: false, error: error.message, code: error.code });
+      }
+      return res.status(500).json({ ok: false, error: error?.message || 'Failed to start tunnel', code: 'startup_failed' });
     }
   });
 
@@ -7836,8 +7962,7 @@ async function main(options = {}) {
 
     if (cloudflareTunnelController) {
       console.log('Stopping Cloudflare tunnel (user requested)...');
-      cloudflareTunnelController.stop();
-      cloudflareTunnelController = null;
+      tunnelService.stop();
     }
 
     tunnelAuthController.clearActiveTunnel();
@@ -13449,40 +13574,45 @@ async function main(options = {}) {
       console.log(`Health check: http://localhost:${activePort}/health`);
       console.log(`Web interface: http://localhost:${activePort}`);
 
-      if (tryCfTunnel) {
-        console.log('\nInitializing Cloudflare Quick Tunnel...');
-        const cfCheck = await checkCloudflaredAvailable();
-        if (cfCheck.available) {
-          try {
-            const originUrl = `http://localhost:${activePort}`;
-            cloudflareTunnelController = await startCloudflareQuickTunnel({ originUrl, port: activePort });
-            printTunnelWarning();
-            const tunnelUrl = cloudflareTunnelController.getPublicUrl();
-            if (tunnelUrl) {
-              tunnelAuthController.setActiveTunnel({
-                tunnelId: crypto.randomUUID(),
-                publicUrl: tunnelUrl,
-                mode: TUNNEL_MODE_QUICK,
-              });
-              const settings = await readSettingsFromDiskMigrated();
-              const bootstrapTtlMs = settings?.tunnelBootstrapTtlMs === null
-                ? null
-                : normalizeTunnelBootstrapTtlMs(settings?.tunnelBootstrapTtlMs);
-              const bootstrapToken = tunnelAuthController.issueBootstrapToken({ ttlMs: bootstrapTtlMs });
-              const connectUrl = `${tunnelUrl.replace(/\/$/, '')}/connect?t=${encodeURIComponent(bootstrapToken.token)}`;
-              if (onTunnelReady) {
-                onTunnelReady(tunnelUrl, connectUrl);
-              } else {
-                console.log(`\n🌐 Tunnel URL: ${connectUrl}`);
-                console.log('🔑 One-time connect link (expires after first use)\n');
-              }
-            } else if (onTunnelReady) {
-              onTunnelReady(tunnelUrl, null);
+      if (startupTunnelRequest) {
+        const startupModeLabel = startupTunnelRequest.mode === TUNNEL_MODE_QUICK
+          ? 'Quick Tunnel'
+          : (startupTunnelRequest.mode === TUNNEL_MODE_MANAGED_LOCAL ? 'Managed Local Tunnel' : 'Managed Remote Tunnel');
+        console.log(`\nInitializing Cloudflare ${startupModeLabel}...`);
+        try {
+          const { publicUrl, mode } = await startTunnelWithNormalizedRequest({
+            provider: startupTunnelRequest.provider,
+            mode: startupTunnelRequest.mode,
+            namedHostname: startupTunnelRequest.hostname,
+            namedToken: startupTunnelRequest.token,
+            configPath: startupTunnelRequest.configPath,
+            selectedPresetId: '',
+            selectedPresetName: '',
+          });
+          if (publicUrl) {
+            tunnelAuthController.setActiveTunnel({
+              tunnelId: crypto.randomUUID(),
+              publicUrl,
+              mode,
+            });
+            const settings = await readSettingsFromDiskMigrated();
+            const bootstrapTtlMs = settings?.tunnelBootstrapTtlMs === null
+              ? null
+              : normalizeTunnelBootstrapTtlMs(settings?.tunnelBootstrapTtlMs);
+            const bootstrapToken = tunnelAuthController.issueBootstrapToken({ ttlMs: bootstrapTtlMs });
+            const connectUrl = `${publicUrl.replace(/\/$/, '')}/connect?t=${encodeURIComponent(bootstrapToken.token)}`;
+            if (onTunnelReady) {
+              onTunnelReady(publicUrl, connectUrl);
+            } else {
+              console.log(`\n🌐 Tunnel URL: ${connectUrl}`);
+              console.log('🔑 One-time connect link (expires after first use)\n');
             }
-          } catch (error) {
-            console.error(`Failed to start Cloudflare tunnel: ${error.message}`);
-            console.log('Continuing without tunnel...');
+          } else if (onTunnelReady) {
+            onTunnelReady(publicUrl, null);
           }
+        } catch (error) {
+          console.error(`Failed to start Cloudflare tunnel: ${error.message}`);
+          console.log('Continuing without tunnel...');
         }
       }
 
@@ -13537,6 +13667,11 @@ if (isCliExecution) {
   main({
     port: cliOptions.port,
     tryCfTunnel: cliOptions.tryCfTunnel,
+    tunnelProvider: cliOptions.tunnelProvider,
+    tunnelMode: cliOptions.tunnelMode,
+    tunnelConfigPath: cliOptions.tunnelConfigPath,
+    tunnelToken: cliOptions.tunnelToken,
+    tunnelHostname: cliOptions.tunnelHostname,
     attachSignals: true,
     exitOnShutdown: true,
     uiPassword: cliOptions.uiPassword

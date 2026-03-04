@@ -35,6 +35,7 @@ type TunnelState =
 
 type TtlOption = { value: string; label: string; ms: number | null };
 type TunnelMode = 'quick' | 'named';
+type ApiTunnelMode = TunnelMode | 'managed-remote' | 'managed-local';
 
 interface NamedTunnelPreset {
   id: string;
@@ -81,13 +82,18 @@ interface TunnelSessionRecord {
 interface TunnelStatusResponse {
   active: boolean;
   url: string | null;
-  mode?: TunnelMode;
+  mode?: ApiTunnelMode;
+  legacyMode?: TunnelMode;
   hasNamedTunnelToken?: boolean;
   namedTunnelHostname?: string | null;
   hasBootstrapToken?: boolean;
   bootstrapExpiresAt?: number | null;
   namedTunnelTokenPresetIds?: string[];
-  activeTunnelMode?: TunnelMode | null;
+  activeTunnelMode?: ApiTunnelMode | null;
+  providerMetadata?: {
+    configPath?: string | null;
+    resolvedHostname?: string | null;
+  };
   activeSessions?: TunnelSessionRecord[];
   localPort?: number;
   policy?: string;
@@ -96,6 +102,16 @@ interface TunnelStatusResponse {
     sessionTtlMs?: number;
   };
 }
+
+const toUiTunnelMode = (mode: string | null | undefined): TunnelMode => {
+  if (mode === 'quick') {
+    return 'quick';
+  }
+  if (mode === 'named' || mode === 'managed-remote' || mode === 'managed-local') {
+    return 'named';
+  }
+  return 'quick';
+};
 
 const ttlOptionValue = (options: TtlOption[], ttlMs: number | null, fallback: string) => {
   const matched = options.find((entry) => entry.ms === ttlMs);
@@ -216,7 +232,7 @@ export const TunnelSettings: React.FC = () => {
         ? 'Expired'
         : (record.inactiveReason === 'tunnel-revoked' ? 'Revoked' : 'Inactive');
 
-      const mode = record.mode === 'named' ? 'named' : 'quick';
+      const mode = toUiTunnelMode(record.mode);
       return {
         ...record,
         isActive,
@@ -304,11 +320,7 @@ export const TunnelSettings: React.FC = () => {
           ? settingsData.tunnelSessionTtlMs
           : 8 * 60 * 60 * 1000;
 
-      const loadedMode: TunnelMode = statusData.mode === 'named'
-        ? 'named'
-        : settingsData?.tunnelMode === 'named'
-          ? 'named'
-          : 'quick';
+      const loadedMode: TunnelMode = toUiTunnelMode(statusData.mode ?? settingsData?.tunnelMode);
 
       const loadedHostname = typeof statusData.namedTunnelHostname === 'string'
         ? statusData.namedTunnelHostname
@@ -337,7 +349,11 @@ export const TunnelSettings: React.FC = () => {
       setNamedTunnelPresets(presets);
       setSelectedPresetId(selectedId);
       setSessionRecords(Array.isArray(statusData.activeSessions) ? statusData.activeSessions : []);
-      setActiveTunnelMode(statusData.activeTunnelMode || (statusData.active && statusData.mode ? statusData.mode : null));
+      setActiveTunnelMode(
+        statusData.activeTunnelMode
+          ? toUiTunnelMode(statusData.activeTunnelMode)
+          : (statusData.active && statusData.mode ? toUiTunnelMode(statusData.mode) : null)
+      );
       setSavedTokenPresetIds(new Set(Array.isArray(statusData.namedTunnelTokenPresetIds) ? statusData.namedTunnelTokenPresetIds : []));
       setLocalPort(typeof statusData.localPort === 'number' ? statusData.localPort : null);
 
@@ -583,9 +599,11 @@ export const TunnelSettings: React.FC = () => {
         connectUrl: typeof data.connectUrl === 'string' ? data.connectUrl : null,
         bootstrapExpiresAt: typeof data.bootstrapExpiresAt === 'number' ? data.bootstrapExpiresAt : null,
       });
-      setActiveTunnelMode(data.activeTunnelMode === 'named' || data.activeTunnelMode === 'quick'
-        ? data.activeTunnelMode
-        : (data.mode === 'named' || data.mode === 'quick' ? data.mode : tunnelMode));
+      setActiveTunnelMode(
+        data.activeTunnelMode
+          ? toUiTunnelMode(data.activeTunnelMode)
+          : (data.mode ? toUiTunnelMode(data.mode) : tunnelMode)
+      );
       setSessionRecords(Array.isArray(data.activeSessions) ? data.activeSessions : []);
       if (Array.isArray(data.namedTunnelTokenPresetIds)) {
         setSavedTokenPresetIds(new Set(data.namedTunnelTokenPresetIds));
@@ -593,8 +611,8 @@ export const TunnelSettings: React.FC = () => {
       if (typeof data.localPort === 'number') {
         setLocalPort(data.localPort);
       }
-      if (data.mode === 'named' || data.mode === 'quick') {
-        setTunnelMode(data.mode);
+      if (typeof data.mode === 'string') {
+        setTunnelMode(toUiTunnelMode(data.mode));
       }
       setState('active');
       toast.success('Tunnel link ready');

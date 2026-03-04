@@ -31,7 +31,9 @@ openchamber                          # Start on port 3000
 openchamber --port 8080              # Custom port
 openchamber --daemon                 # Background mode
 openchamber --ui-password secret     # Password-protect UI
-openchamber --try-cf-tunnel          # Create a Cloudflare Quick Tunnel for remote access
+openchamber --tunnel-provider cloudflare --tunnel-mode quick  # Create a Cloudflare Quick Tunnel for remote access
+openchamber --tunnel-provider cloudflare --tunnel-mode managed-local --tunnel-config  # Use default ~/.cloudflared/config.yml
+openchamber --tunnel ~/.cloudflared/config.yml   # Shorthand for managed-local with explicit config path
 openchamber --try-cf-tunnel --tunnel-qr              # Show QR code for easy mobile access
 openchamber --try-cf-tunnel --tunnel-password-url   # Include password in URL for auto-login
 OPENCODE_PORT=4096 OPENCODE_SKIP_START=true openchamber                    # Connect to external OpenCode server
@@ -40,7 +42,7 @@ openchamber stop                     # Stop server
 openchamber update                   # Update to latest version
 ```
 
-Named Tunnel mode is configured in-app (Settings -> OpenChamber -> Tunnel). The CLI currently supports Quick Tunnel flags only. `--tunnel <config.yml>` is not supported yet.
+Legacy CLI flag `--try-cf-tunnel` remains supported for backward compatibility and maps to `--tunnel-provider cloudflare --tunnel-mode quick`.
 
 ### Environment Variables
 
@@ -66,7 +68,7 @@ Named Tunnel mode is configured in-app (Settings -> OpenChamber -> Tunnel). The 
 
 ### Web / PWA
 
-- Cloudflare tunnel access with two modes: Quick Tunnel (CLI) and Named Tunnel (in-app settings)
+- Cloudflare tunnel access with Quick, managed-remote, and managed-local modes
 - One-scan onboarding with tunnel QR + password URL helpers
 - Mobile-first experience: optimized chat controls, keyboard-safe layouts, and attachment-friendly UI
 - Background notifications plus reliable cross-tab session activity tracking

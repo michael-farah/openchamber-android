@@ -107,7 +107,9 @@ openchamber                          # Start on port 3000
 openchamber --port 8080              # Custom port
 openchamber --daemon                 # Background mode
 openchamber --ui-password secret     # Password-protect UI
-openchamber --try-cf-tunnel          # Create a Cloudflare Quick Tunnel for remote access
+openchamber --tunnel-provider cloudflare --tunnel-mode quick  # Create a Cloudflare Quick Tunnel for remote access
+openchamber --tunnel-provider cloudflare --tunnel-mode managed-local --tunnel-config  # Use default ~/.cloudflared/config.yml
+openchamber --tunnel ~/.cloudflared/config.yml   # Shorthand for managed-local with explicit config path
 openchamber --try-cf-tunnel --tunnel-qr              # Show QR code for easy mobile access
 openchamber --try-cf-tunnel --tunnel-password-url   # Include password in URL for auto-login
 OPENCODE_PORT=4096 OPENCODE_SKIP_START=true openchamber                    # Connect to external OpenCode server
@@ -116,7 +118,7 @@ openchamber stop                     # Stop server
 openchamber update                   # Update to latest version
 ```
 
-Named Tunnel mode is configured in-app (Settings -> OpenChamber -> Tunnel). The CLI currently supports Quick Tunnel flags only. `--tunnel <config.yml>` is not supported yet.
+Legacy CLI flag `--try-cf-tunnel` remains supported for backward compatibility and maps to `--tunnel-provider cloudflare --tunnel-mode quick`.
 
 ### Desktop App (macOS)
 
@@ -163,7 +165,7 @@ OpenChamber also supports Named Tunnel mode for more reliable long-lived access 
 - Configure it in-app at **Settings -> OpenChamber -> Tunnel** and switch mode to **Named**.
 - Named tunnels require a domain in your Cloudflare account.
 - Cloudflare setup guide: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/
-- CLI note: `--tunnel <config.yml>` is not supported yet.
+- CLI note: `--tunnel [config.yml]` enables managed-local Cloudflare tunnels.
 
 **Data Directory Permission Note:** The `data/` directory is mounted into the container for persistent storage (config, sessions, SSH keys, workspaces). Before running, ensure the directory exists and has proper permissions:
 
@@ -183,7 +185,7 @@ Without proper permissions, the container may fail to start or encounter permiss
 
 - [OpenCode CLI](https://opencode.ai) installed
 - Node.js 20+ (for web version)
-- [cloudflared](https://github.com/cloudflare/cloudflared/releases) (required for `--try-cf-tunnel`)
+- [cloudflared](https://github.com/cloudflare/cloudflared/releases) (required for Cloudflare tunnel modes)
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
