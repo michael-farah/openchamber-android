@@ -7,6 +7,7 @@ import {
   RiCheckboxBlankCircleFill,
   RiCheckLine,
   RiCloseLine,
+  RiCloudLine,
   RiDeleteBinLine,
   RiErrorWarningLine,
   RiExternalLinkLine,
@@ -127,6 +128,25 @@ interface TunnelProviderCapability {
   provider: string;
   modes?: TunnelProviderModeDescriptor[];
 }
+
+const getProviderLabel = (provider: string): string => {
+  if (provider === 'cloudflare') {
+    return 'Cloudflare';
+  }
+  return provider;
+};
+
+const ProviderOptionLabel: React.FC<{ provider: string }> = ({ provider }) => {
+  const label = getProviderLabel(provider);
+  const isCloudflare = provider === 'cloudflare';
+
+  return (
+    <span className="flex items-center gap-2">
+      <RiCloudLine className={cn('size-4 shrink-0', isCloudflare ? 'text-[var(--status-warning)]' : 'text-muted-foreground')} />
+      <span>{label}</span>
+    </span>
+  );
+};
 
 const toUiTunnelMode = (mode: string | null | undefined): TunnelMode => {
   if (mode === 'quick') {
@@ -1064,9 +1084,15 @@ export const TunnelSettings: React.FC = () => {
                 <SelectContent>
                   {providerCapabilities.length > 0
                     ? providerCapabilities.map((capability) => (
-                      <SelectItem key={capability.provider} value={capability.provider}>{capability.provider}</SelectItem>
+                      <SelectItem key={capability.provider} value={capability.provider}>
+                        <ProviderOptionLabel provider={capability.provider} />
+                      </SelectItem>
                     ))
-                    : <SelectItem value="cloudflare">cloudflare</SelectItem>}
+                    : (
+                      <SelectItem value="cloudflare">
+                        <ProviderOptionLabel provider="cloudflare" />
+                      </SelectItem>
+                    )}
                   <SelectItem value="__more-soon" disabled>More providers coming soon</SelectItem>
                 </SelectContent>
               </Select>
