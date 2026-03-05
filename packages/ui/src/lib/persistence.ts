@@ -509,6 +509,12 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   if (typeof candidate.autoDeleteAfterDays === 'number' && Number.isFinite(candidate.autoDeleteAfterDays)) {
     result.autoDeleteAfterDays = candidate.autoDeleteAfterDays;
   }
+  if (typeof candidate.tunnelProvider === 'string') {
+    const provider = candidate.tunnelProvider.trim().toLowerCase();
+    if (provider.length > 0) {
+      result.tunnelProvider = provider;
+    }
+  }
   if (typeof candidate.tunnelMode === 'string') {
     const mode = candidate.tunnelMode.trim().toLowerCase();
     if (mode === 'quick' || mode === 'managed-remote' || mode === 'managed-local') {
@@ -522,6 +528,12 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   }
   if (typeof candidate.tunnelSessionTtlMs === 'number' && Number.isFinite(candidate.tunnelSessionTtlMs)) {
     result.tunnelSessionTtlMs = candidate.tunnelSessionTtlMs;
+  }
+  if (candidate.managedLocalTunnelConfigPath === null) {
+    result.managedLocalTunnelConfigPath = null;
+  } else if (typeof candidate.managedLocalTunnelConfigPath === 'string') {
+    const trimmed = candidate.managedLocalTunnelConfigPath.trim();
+    result.managedLocalTunnelConfigPath = trimmed.length > 0 ? trimmed : null;
   }
   if (typeof candidate.managedRemoteTunnelHostname === 'string') {
     result.managedRemoteTunnelHostname = candidate.managedRemoteTunnelHostname.trim();

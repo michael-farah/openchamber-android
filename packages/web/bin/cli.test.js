@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { parseArgs } from './cli.js';
+import { parseArgs, resolveTunnelProviders } from './cli.js';
 
 describe('cli parseArgs tunnel flags', () => {
   it('maps legacy quick tunnel flag and emits deprecation warning', () => {
@@ -39,5 +39,34 @@ describe('cli parseArgs tunnel flags', () => {
     expect(options.tryCfTunnel).toBe(true);
     expect(options.tunnelMode).toBe('managed-local');
     expect(options.tunnelConfigPath).toBeNull();
+  });
+});
+
+describe('cli tunnel provider discovery', () => {
+  it('uses provider capabilities from local api when available', async () => {
+    const fetchImpl = async () => ({
+      ok: true,
+      json: async () => ({
+        providers: [{ provider: 'cloudflare', modes: [{ key: 'quick' }] }],
+      }),
+    });
+
+    const result = await resolveTunnelProviders({ port: 4501 }, { readPorts: () => [], fetchImpl });
+
+    expect(result.source).toBe('api:4501');
+    expect(Array.isArray(result.providers)).toBe(true);
+    expect(result.providers[0]?.provider).toBe('cloudflare');
+  });
+
+  it('falls back to built-in provider capabilities when api is unavailable', async () => {
+    const fetchImpl = async () => {
+      throw new Error('unreachable');
+    };
+
+    const result = await resolveTunnelProviders({ port: 4501 }, { readPorts: () => [], fetchImpl });
+
+    expect(result.source).toBe('fallback');
+    expect(Array.isArray(result.providers)).toBe(true);
+    expect(result.providers[0]?.provider).toBe('cloudflare');
   });
 });

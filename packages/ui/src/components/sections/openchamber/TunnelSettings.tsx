@@ -6,10 +6,12 @@ import {
   RiArrowRightSLine,
   RiCheckboxBlankCircleFill,
   RiCheckLine,
+  RiCloseLine,
   RiDeleteBinLine,
   RiErrorWarningLine,
   RiExternalLinkLine,
   RiFileCopyLine,
+  RiFolderLine,
   RiInformationLine,
   RiLoader4Line,
   RiRestartLine,
@@ -21,6 +23,7 @@ import { GridLoader } from '@/components/ui/grid-loader';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { requestFileAccess } from '@/lib/desktop';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { cn } from '@/lib/utils';
 
@@ -58,11 +61,22 @@ const SESSION_TTL_OPTIONS: TtlOption[] = [
   { value: '86400000', label: '24h', ms: 24 * 60 * 60 * 1000 },
 ];
 
-const QUICK_TUNNEL_TOOLTIP = 'Quick Tunnel is best effort and Cloudflare does not guarantee uptime. For more reliable long-lived access, switch to Managed Remote Tunnel mode.';
-const MANAGED_REMOTE_TUNNEL_TOOLTIP = 'Managed Remote Tunnel mode uses your Cloudflare account and custom hostname for more reliable remote access.';
 const MANAGED_REMOTE_TUNNEL_DOC_URL = 'https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/';
-const MANAGED_LOCAL_TUNNEL_TOOLTIP = 'Managed Local Tunnel mode uses your local cloudflared config for persistent access.';
 const MANAGED_LOCAL_TUNNEL_DOC_URL = 'https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/configuration-file/';
+
+const TUNNEL_MODE_OPTIONS: Array<{ value: TunnelMode; label: string; tooltip: string }> = [
+  { value: 'quick', label: 'Quick', tooltip: 'Quick Tunnel is best effort and Cloudflare does not guarantee uptime.' },
+  { value: 'managed-remote', label: 'Managed Remote', tooltip: 'Managed Remote uses your Cloudflare account and hostname for long-lived access.' },
+  { value: 'managed-local', label: 'Managed Local', tooltip: 'Managed Local uses your local cloudflared configuration file.' },
+];
+
+const MANAGED_LOCAL_CONFIG_ALLOWED_EXTENSIONS = ['.yml', '.yaml', '.json'];
+const MANAGED_LOCAL_CONFIG_EXTENSION_ERROR = 'Config file must use .yml, .yaml, or .json extension.';
+
+const hasAllowedManagedLocalConfigExtension = (filePath: string): boolean => {
+  const normalized = filePath.trim().toLowerCase();
+  return MANAGED_LOCAL_CONFIG_ALLOWED_EXTENSIONS.some((extension) => normalized.endsWith(extension));
+};
 
 interface TunnelInfo {
   url: string;
@@ -102,6 +116,16 @@ interface TunnelStatusResponse {
     bootstrapTtlMs?: number | null;
     sessionTtlMs?: number;
   };
+}
+
+interface TunnelProviderModeDescriptor {
+  key: TunnelMode;
+  label: string;
+}
+
+interface TunnelProviderCapability {
+  provider: string;
+  modes?: TunnelProviderModeDescriptor[];
 }
 
 const toUiTunnelMode = (mode: string | null | undefined): TunnelMode => {
@@ -204,7 +228,10 @@ export const TunnelSettings: React.FC = () => {
   const [copied, setCopied] = React.useState(false);
   const [isSavingTtl, setIsSavingTtl] = React.useState(false);
   const [isSavingMode, setIsSavingMode] = React.useState(false);
+  const [tunnelProvider, setTunnelProvider] = React.useState<string>('cloudflare');
+  const [providerCapabilities, setProviderCapabilities] = React.useState<TunnelProviderCapability[]>([]);
   const [tunnelMode, setTunnelMode] = React.useState<TunnelMode>('quick');
+  const [managedLocalConfigPath, setManagedLocalConfigPath] = React.useState<string | null>(null);
   const [managedRemoteTunnelPresets, setManagedRemoteTunnelPresets] = React.useState<ManagedRemoteTunnelPreset[]>([]);
   const [expandedManagedRemoteTunnels, setExpandedManagedRemoteTunnels] = React.useState<Record<string, boolean>>({});
   const [selectedPresetId, setSelectedPresetId] = React.useState<string>('');
@@ -220,6 +247,13 @@ export const TunnelSettings: React.FC = () => {
   const [sessionRecords, setSessionRecords] = React.useState<TunnelSessionRecord[]>([]);
   const [nowTs, setNowTs] = React.useState<number>(() => Date.now());
   const [localPort, setLocalPort] = React.useState<number | null>(null);
+  const managedLocalConfigFileInputRef = React.useRef<HTMLInputElement>(null);
+  const isManagedLocalConfigPathInvalid = React.useMemo(() => {
+    if (!managedLocalConfigPath) {
+      return false;
+    }
+    return !hasAllowedManagedLocalConfigExtension(managedLocalConfigPath);
+  }, [managedLocalConfigPath]);
 
   const selectedPreset = React.useMemo(
     () => managedRemoteTunnelPresets.find((preset) => preset.id === selectedPresetId) || managedRemoteTunnelPresets[0] || null,
@@ -302,15 +336,17 @@ export const TunnelSettings: React.FC = () => {
 
   const checkAvailabilityAndStatus = React.useCallback(async (signal: AbortSignal) => {
     try {
-      const [checkRes, statusRes, settingsRes] = await Promise.all([
+      const [checkRes, statusRes, settingsRes, providersRes] = await Promise.all([
         fetch('/api/openchamber/tunnel/check', { signal }),
         fetch('/api/openchamber/tunnel/status', { signal }),
         fetch('/api/config/settings', { signal, headers: { Accept: 'application/json' } }),
+        fetch('/api/openchamber/tunnel/providers', { signal }),
       ]);
 
       const checkData = await checkRes.json();
       const statusData = (await statusRes.json()) as TunnelStatusResponse;
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
+      const providersData = providersRes.ok ? await providersRes.json() : {};
 
       const loadedBootstrapTtl = statusData.ttlConfig?.bootstrapTtlMs
         ?? (settingsData?.tunnelBootstrapTtlMs === null
@@ -325,6 +361,12 @@ export const TunnelSettings: React.FC = () => {
           : 8 * 60 * 60 * 1000;
 
       const loadedMode: TunnelMode = toUiTunnelMode(statusData.mode ?? settingsData?.tunnelMode);
+      const loadedProvider = typeof settingsData?.tunnelProvider === 'string' && settingsData.tunnelProvider.trim().length > 0
+        ? settingsData.tunnelProvider.trim().toLowerCase()
+        : 'cloudflare';
+      const loadedManagedLocalConfigPath = typeof settingsData?.managedLocalTunnelConfigPath === 'string'
+        ? settingsData.managedLocalTunnelConfigPath.trim() || null
+        : null;
 
       const loadedHostname = typeof statusData.managedRemoteTunnelHostname === 'string'
         ? statusData.managedRemoteTunnelHostname
@@ -349,7 +391,10 @@ export const TunnelSettings: React.FC = () => {
 
       setBootstrapTtlMs(loadedBootstrapTtl);
       setSessionTtlMs(loadedSessionTtl);
+      setTunnelProvider(loadedProvider);
+      setProviderCapabilities(Array.isArray(providersData?.providers) ? providersData.providers : []);
       setTunnelMode(loadedMode);
+      setManagedLocalConfigPath(loadedManagedLocalConfigPath);
       setManagedRemoteTunnelPresets(presets);
       setSelectedPresetId(selectedId);
       setSessionRecords(Array.isArray(statusData.activeSessions) ? statusData.activeSessions : []);
@@ -472,7 +517,9 @@ export const TunnelSettings: React.FC = () => {
   }, [state]);
 
   const saveTunnelSettings = React.useCallback(async (payload: {
+    tunnelProvider?: string;
     tunnelMode?: TunnelMode;
+    managedLocalTunnelConfigPath?: string | null;
     managedRemoteTunnelHostname?: string;
     managedRemoteTunnelPresets?: ManagedRemoteTunnelPreset[];
     managedRemoteTunnelSelectedPresetId?: string;
@@ -485,6 +532,12 @@ export const TunnelSettings: React.FC = () => {
       await updateDesktopSettings(payload);
       if (Object.prototype.hasOwnProperty.call(payload, 'tunnelMode') && payload.tunnelMode) {
         setTunnelMode(payload.tunnelMode);
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, 'tunnelProvider') && typeof payload.tunnelProvider === 'string') {
+        setTunnelProvider(payload.tunnelProvider);
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, 'managedLocalTunnelConfigPath')) {
+        setManagedLocalConfigPath(payload.managedLocalTunnelConfigPath ?? null);
       }
       if (Object.prototype.hasOwnProperty.call(payload, 'managedRemoteTunnelPresets') && payload.managedRemoteTunnelPresets) {
         setManagedRemoteTunnelPresets(payload.managedRemoteTunnelPresets);
@@ -542,10 +595,80 @@ export const TunnelSettings: React.FC = () => {
     }
   }, [sessionTokensByPresetId]);
 
+  const handleProviderChange = React.useCallback(async (provider: string) => {
+    setManagedRemoteValidationError(null);
+    setErrorMessage(null);
+    await saveTunnelSettings({ tunnelProvider: provider });
+  }, [saveTunnelSettings]);
+
+  const handleBrowseManagedLocalConfig = React.useCallback(async () => {
+    const result = await requestFileAccess({
+      filters: [{ name: 'Config', extensions: ['yml', 'yaml', 'json'] }],
+    });
+
+    if (result.success && typeof result.path === 'string' && result.path.trim().length > 0) {
+      const nextPath = result.path.trim();
+      if (!hasAllowedManagedLocalConfigExtension(nextPath)) {
+        toast.error(MANAGED_LOCAL_CONFIG_EXTENSION_ERROR);
+        return;
+      }
+      setManagedLocalConfigPath(nextPath);
+      await saveTunnelSettings({ managedLocalTunnelConfigPath: nextPath });
+      return;
+    }
+
+    managedLocalConfigFileInputRef.current?.click();
+  }, [saveTunnelSettings]);
+
+  const handleManagedLocalConfigInputChange = React.useCallback((value: string) => {
+    const trimmed = value.trim();
+    setManagedLocalConfigPath(trimmed.length > 0 ? trimmed : null);
+  }, []);
+
+  const handleManagedLocalConfigInputBlur = React.useCallback(async () => {
+    if (managedLocalConfigPath && !hasAllowedManagedLocalConfigExtension(managedLocalConfigPath)) {
+      toast.error(MANAGED_LOCAL_CONFIG_EXTENSION_ERROR);
+      return;
+    }
+    await saveTunnelSettings({ managedLocalTunnelConfigPath: managedLocalConfigPath });
+  }, [managedLocalConfigPath, saveTunnelSettings]);
+
+  const handleManagedLocalConfigClear = React.useCallback(async () => {
+    setManagedLocalConfigPath(null);
+    await saveTunnelSettings({ managedLocalTunnelConfigPath: null });
+  }, [saveTunnelSettings]);
+
+  const handleManagedLocalConfigFileSelected = React.useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    if (!selected) {
+      return;
+    }
+
+    const fallbackPath = selected.name.trim();
+    if (fallbackPath.length === 0) {
+      return;
+    }
+    if (!hasAllowedManagedLocalConfigExtension(fallbackPath)) {
+      toast.error(MANAGED_LOCAL_CONFIG_EXTENSION_ERROR);
+      return;
+    }
+
+    setManagedLocalConfigPath(fallbackPath);
+    await saveTunnelSettings({ managedLocalTunnelConfigPath: fallbackPath });
+    event.target.value = '';
+  }, [saveTunnelSettings]);
+
   const handleStart = React.useCallback(async () => {
-    setState('starting');
     setErrorMessage(null);
     setManagedRemoteValidationError(null);
+
+    if (tunnelMode === 'managed-local' && managedLocalConfigPath && !hasAllowedManagedLocalConfigExtension(managedLocalConfigPath)) {
+      setErrorMessage(MANAGED_LOCAL_CONFIG_EXTENSION_ERROR);
+      toast.error(MANAGED_LOCAL_CONFIG_EXTENSION_ERROR);
+      return;
+    }
+
+    setState('starting');
 
     try {
       let managedRemoteTunnelHostname = '';
@@ -574,6 +697,7 @@ export const TunnelSettings: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          provider: tunnelProvider,
           mode: tunnelMode,
           ...(tunnelMode === 'managed-remote' && selectedPreset ? {
             managedRemoteTunnelPresetId: selectedPreset.id,
@@ -581,6 +705,7 @@ export const TunnelSettings: React.FC = () => {
           } : {}),
           ...(tunnelMode === 'managed-remote' && managedRemoteTunnelHostname ? { managedRemoteTunnelHostname } : {}),
           ...(tunnelMode === 'managed-remote' && managedRemoteTunnelToken ? { managedRemoteTunnelToken } : {}),
+          ...(tunnelMode === 'managed-local' && managedLocalConfigPath ? { configPath: managedLocalConfigPath } : {}),
         }),
       });
       const data = await res.json();
@@ -630,7 +755,9 @@ export const TunnelSettings: React.FC = () => {
     saveTunnelSettings,
     selectedPreset,
     sessionTokensByPresetId,
+    tunnelProvider,
     tunnelMode,
+    managedLocalConfigPath,
   ]);
 
   const handleStop = React.useCallback(async () => {
@@ -868,12 +995,16 @@ export const TunnelSettings: React.FC = () => {
             <div className="space-y-1">
               {renderedSessionRecords.map((record) => {
                 const isQuick = record.mode === 'quick';
+                const isManagedRemote = record.mode === 'managed-remote';
                 const modeBadgeClass = isQuick
                   ? 'border-[var(--status-warning-border)] bg-[var(--status-warning-background)] text-[var(--status-warning)]'
-                  : 'border-[var(--status-info-border)] bg-[var(--status-info-background)] text-[var(--status-info)]';
+                  : isManagedRemote
+                    ? 'border-[var(--status-info-border)] bg-[var(--status-info-background)] text-[var(--status-info)]'
+                    : 'border-[var(--status-success-border)] bg-[var(--status-success-background)] text-[var(--status-success)]';
                 const statusDotClass = record.isActive
-                  ? (isQuick ? 'text-[var(--status-warning)]' : 'text-[var(--status-info)]')
+                  ? (isQuick ? 'text-[var(--status-warning)]' : isManagedRemote ? 'text-[var(--status-info)]' : 'text-[var(--status-success)]')
                   : 'text-muted-foreground/50';
+                const modeLabel = isQuick ? 'QUICK' : isManagedRemote ? 'REMOTE' : 'LOCAL';
 
                 return (
                   <div
@@ -882,7 +1013,7 @@ export const TunnelSettings: React.FC = () => {
                   >
                     <RiCheckboxBlankCircleFill className={cn('size-2.5 shrink-0', statusDotClass)} />
                     <span className={cn('typography-micro rounded border px-1.5 py-0.5 uppercase', modeBadgeClass)}>
-                      {isQuick ? 'QUICK' : 'NAMED'}
+                      {modeLabel}
                     </span>
                     <span className="typography-meta text-muted-foreground/80">
                       Redeemed {formatAbsoluteTime(record.createdAt)}
@@ -917,80 +1048,59 @@ export const TunnelSettings: React.FC = () => {
 
       {state !== 'not-available' && (
         <section className="space-y-4 px-2 pb-2 pt-0">
-          <div className="space-y-1.5">
-            <p className="typography-ui-label text-foreground">Tunnel type</p>
-            <div className="flex flex-wrap items-center gap-1">
-              <Tooltip delayDuration={700}>
-                <TooltipTrigger asChild>
-                  <ButtonSmall
-                    variant="outline"
-                    size="xs"
-                    className={cn(
-                      '!font-normal',
-                      tunnelMode === 'quick'
-                        ? 'border-[var(--status-warning-border)] bg-[var(--status-warning-background)] text-[var(--status-warning)] hover:text-[var(--status-warning)]'
-                        : 'text-foreground'
-                    )}
-                    onClick={() => {
-                      void handleModeChange('quick');
-                    }}
-                    disabled={isSavingMode || state === 'starting' || state === 'stopping'}
-                  >
-                    Quick Tunnel
-                  </ButtonSmall>
-                </TooltipTrigger>
-                <TooltipContent sideOffset={8} className="max-w-xs">
-                  {QUICK_TUNNEL_TOOLTIP}
-                </TooltipContent>
-              </Tooltip>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <p className="typography-ui-label text-foreground">Provider</p>
+              <Select
+                value={tunnelProvider}
+                onValueChange={(value) => {
+                  void handleProviderChange(value);
+                }}
+                disabled={isSavingMode || state === 'starting' || state === 'stopping'}
+              >
+                <SelectTrigger className="max-w-[16rem]">
+                  <SelectValue placeholder="Select provider" />
+                </SelectTrigger>
+                <SelectContent>
+                  {providerCapabilities.length > 0
+                    ? providerCapabilities.map((capability) => (
+                      <SelectItem key={capability.provider} value={capability.provider}>{capability.provider}</SelectItem>
+                    ))
+                    : <SelectItem value="cloudflare">cloudflare</SelectItem>}
+                  <SelectItem value="__more-soon" disabled>More providers coming soon</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
-              <Tooltip delayDuration={700}>
-                <TooltipTrigger asChild>
-                  <ButtonSmall
-                    variant="outline"
-                    size="xs"
-                    className={cn(
-                      '!font-normal',
-                      tunnelMode === 'managed-remote'
-                        ? 'border-[var(--status-info-border)] bg-[var(--status-info-background)] text-[var(--status-info)] hover:text-[var(--status-info)]'
-                        : 'text-foreground'
-                    )}
-                    onClick={() => {
-                      void handleModeChange('managed-remote');
-                    }}
-                    disabled={isSavingMode || state === 'starting' || state === 'stopping'}
-                  >
-                    Managed Remote Tunnel
-                  </ButtonSmall>
-                </TooltipTrigger>
-                <TooltipContent sideOffset={8} className="max-w-xs">
-                  {MANAGED_REMOTE_TUNNEL_TOOLTIP}
-                </TooltipContent>
-              </Tooltip>
-
-              <Tooltip delayDuration={700}>
-                <TooltipTrigger asChild>
-                  <ButtonSmall
-                    variant="outline"
-                    size="xs"
-                    className={cn(
-                      '!font-normal',
-                      tunnelMode === 'managed-local'
-                        ? 'border-[var(--status-info-border)] bg-[var(--status-info-background)] text-[var(--status-info)] hover:text-[var(--status-info)]'
-                        : 'text-foreground'
-                    )}
-                    onClick={() => {
-                      void handleModeChange('managed-local');
-                    }}
-                    disabled={isSavingMode || state === 'starting' || state === 'stopping'}
-                  >
-                    Managed Local Tunnel
-                  </ButtonSmall>
-                </TooltipTrigger>
-                <TooltipContent sideOffset={8} className="max-w-xs">
-                  {MANAGED_LOCAL_TUNNEL_TOOLTIP}
-                </TooltipContent>
-              </Tooltip>
+            <div className="space-y-1.5">
+              <p className="typography-ui-label text-foreground">Tunnel type</p>
+              <div className="flex flex-wrap items-center gap-1">
+                {TUNNEL_MODE_OPTIONS.map((option) => (
+                  <Tooltip key={option.value} delayDuration={700}>
+                    <TooltipTrigger asChild>
+                      <ButtonSmall
+                        variant="outline"
+                        size="xs"
+                        className={cn(
+                          '!font-normal',
+                          tunnelMode === option.value
+                            ? 'border-[var(--primary-base)] text-[var(--primary-base)] bg-[var(--primary-base)]/10 hover:text-[var(--primary-base)]'
+                            : 'text-foreground'
+                        )}
+                        onClick={() => {
+                          void handleModeChange(option.value);
+                        }}
+                        disabled={isSavingMode || state === 'starting' || state === 'stopping'}
+                      >
+                        {option.label}
+                      </ButtonSmall>
+                    </TooltipTrigger>
+                    <TooltipContent sideOffset={8} className="max-w-xs">
+                      {option.tooltip}
+                    </TooltipContent>
+                  </Tooltip>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -1263,6 +1373,71 @@ export const TunnelSettings: React.FC = () => {
             </div>
           )}
 
+          {tunnelMode === 'managed-local' && (
+            <div className="space-y-2 rounded-lg border border-[var(--interactive-border)] bg-[var(--surface-elevated)] p-3">
+              <div className="space-y-1.5">
+                <p className="typography-ui-label text-foreground">Configuration file</p>
+                <input
+                  ref={managedLocalConfigFileInputRef}
+                  type="file"
+                  accept=".yml,.yaml,.json"
+                  className="hidden"
+                  onChange={(event) => {
+                    void handleManagedLocalConfigFileSelected(event);
+                  }}
+                />
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={managedLocalConfigPath || ''}
+                    onChange={(event) => {
+                      handleManagedLocalConfigInputChange(event.target.value);
+                    }}
+                    onBlur={() => {
+                      void handleManagedLocalConfigInputBlur();
+                    }}
+                    placeholder="Using default cloudflared config"
+                    className="h-7"
+                    disabled={state === 'starting' || state === 'stopping' || isSavingMode}
+                  />
+                  <ButtonSmall
+                    variant="outline"
+                    size="xs"
+                    className="h-7 w-7 p-0"
+                    aria-label="Browse config file"
+                    onClick={() => {
+                      void handleBrowseManagedLocalConfig();
+                    }}
+                    disabled={state === 'starting' || state === 'stopping' || isSavingMode}
+                  >
+                    <RiFolderLine className="size-3.5" />
+                  </ButtonSmall>
+                  {managedLocalConfigPath && (
+                    <ButtonSmall
+                      variant="ghost"
+                      size="xs"
+                      className="h-7 w-7 p-0"
+                      aria-label="Clear config file"
+                      onClick={() => {
+                        void handleManagedLocalConfigClear();
+                      }}
+                      disabled={state === 'starting' || state === 'stopping' || isSavingMode}
+                    >
+                      <RiCloseLine className="size-3.5" />
+                    </ButtonSmall>
+                  )}
+                </div>
+                <p className="typography-meta text-muted-foreground/70">
+                  {managedLocalConfigPath
+                    ? 'Custom config file will be used when starting the tunnel.'
+                    : 'When empty, cloudflared uses its default config (~/.cloudflared/config.yml).'}
+                </p>
+                {isManagedLocalConfigPathInvalid && (
+                  <p className="typography-meta text-[var(--status-error)]">{MANAGED_LOCAL_CONFIG_EXTENSION_ERROR}</p>
+                )}
+              </div>
+            </div>
+          )}
+
           {!isSelectedModeTunnelReady && (
             <div className="space-y-6">
               <div className="rounded-lg border border-[var(--status-info-border)] bg-[var(--status-info-background)] p-3">
@@ -1340,7 +1515,12 @@ export const TunnelSettings: React.FC = () => {
               <ButtonSmall
                 variant="outline"
                 onClick={handleStart}
-                disabled={state === 'starting' || isSavingMode || (tunnelMode === 'managed-remote' && !selectedPreset)}
+                disabled={
+                  state === 'starting'
+                  || isSavingMode
+                  || (tunnelMode === 'managed-remote' && !selectedPreset)
+                  || (tunnelMode === 'managed-local' && isManagedLocalConfigPathInvalid)
+                }
                 className={cn(primaryCtaClass, state === 'starting' && 'opacity-70')}
               >
                 {state === 'starting'
@@ -1403,7 +1583,7 @@ export const TunnelSettings: React.FC = () => {
               <ButtonSmall
                 variant="outline"
                 onClick={handleStart}
-                disabled={state === 'stopping' || isSavingMode}
+                disabled={state === 'stopping' || isSavingMode || (tunnelMode === 'managed-local' && isManagedLocalConfigPathInvalid)}
                 className={primaryCtaClass}
               >
                 <RiRestartLine className="size-3.5" />

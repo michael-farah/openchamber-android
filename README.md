@@ -162,7 +162,7 @@ environment:
 
 OpenChamber also supports managed-remote mode for more reliable long-lived access with your Cloudflare account and custom hostname.
 
-- Configure it in-app at **Settings -> OpenChamber -> Tunnel** and switch mode to **Named** (legacy UI label for managed-remote).
+- Configure it in-app at **Settings -> OpenChamber -> Tunnel** and switch mode to **Managed Remote Tunnel**.
 - Managed-remote tunnels require a domain in your Cloudflare account.
 - Cloudflare setup guide: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/
 - CLI note: `--tunnel [config.yml]` enables managed-local Cloudflare tunnels.

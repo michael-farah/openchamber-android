@@ -159,17 +159,17 @@ function assertReadableFile(filePath, contextLabel) {
   try {
     stats = fs.statSync(filePath);
   } catch {
-    throw new Error(`${contextLabel} not found: ${filePath}`);
+    throw new Error(`${contextLabel} file was not found. Select a valid cloudflared config file.`);
   }
 
   if (!stats.isFile()) {
-    throw new Error(`${contextLabel} is not a file: ${filePath}`);
+    throw new Error(`${contextLabel} path is not a file. Select a cloudflared config file.`);
   }
 
   try {
     fs.accessSync(filePath, fs.constants.R_OK);
   } catch {
-    throw new Error(`${contextLabel} is not readable: ${filePath}`);
+    throw new Error(`${contextLabel} file is not readable. Check file permissions and try again.`);
   }
 }
 
@@ -184,18 +184,17 @@ function extractHostnameFromCloudflaredConfigDetailed(configPath) {
   } catch {
     return {
       hostname: null,
-      parseError: new Error(`Managed local tunnel config is not readable: ${configPath}`),
+      parseError: new Error('Could not read the managed local tunnel config file. Check that the file exists and is accessible.'),
     };
   }
 
   let parsed;
   try {
     parsed = yaml.parse(raw);
-  } catch (error) {
-    const reason = typeof error?.message === 'string' ? ` (${error.message})` : '';
+  } catch {
     return {
       hostname: null,
-      parseError: new Error(`Managed local tunnel config is invalid YAML: ${configPath}${reason}`),
+      parseError: new Error('Managed local tunnel config is invalid. Use a valid cloudflared YAML/JSON config file.'),
     };
   }
 

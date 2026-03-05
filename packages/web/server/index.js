@@ -1162,7 +1162,8 @@ const OPENCHAMBER_DATA_DIR = process.env.OPENCHAMBER_DATA_DIR
 const SETTINGS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'settings.json');
 const PUSH_SUBSCRIPTIONS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'push-subscriptions.json');
 const CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'cloudflare-managed-remote-tunnels.json');
-const CLOUDFLARE_NAMED_TUNNELS_VERSION = 1;
+const CLOUDFLARE_LEGACY_NAMED_TUNNELS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'cloudflare-named-tunnels.json');
+const CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION = 1;
 const PROJECT_ICONS_DIR_PATH = path.join(OPENCHAMBER_DATA_DIR, 'project-icons');
 const PROJECT_ICON_MIME_TO_EXTENSION = {
   'image/png': 'png',
@@ -1431,17 +1432,37 @@ const sanitizeManagedRemoteTunnelConfigEntries = (value) => {
   return result;
 };
 
+const migrateManagedRemoteTunnelConfigFromLegacyFile = async () => {
+  try {
+    const legacyRaw = await fsPromises.readFile(CLOUDFLARE_LEGACY_NAMED_TUNNELS_FILE_PATH, 'utf8');
+    const parsed = JSON.parse(legacyRaw);
+    const tunnels = sanitizeManagedRemoteTunnelConfigEntries(parsed?.tunnels);
+    const migrated = {
+      version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION,
+      tunnels,
+    };
+    await writeManagedRemoteTunnelConfigToDisk(migrated);
+    return migrated;
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ENOENT') {
+      return { version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION, tunnels: [] };
+    }
+    console.warn('Failed to migrate legacy named tunnel config file:', error);
+    return { version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION, tunnels: [] };
+  }
+};
+
 const readManagedRemoteTunnelConfigFromDisk = async () => {
   try {
     const raw = await fsPromises.readFile(CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH, 'utf8');
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') {
-      return { version: CLOUDFLARE_NAMED_TUNNELS_VERSION, tunnels: [] };
+      return { version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION, tunnels: [] };
     }
 
-    const version = parsed.version === CLOUDFLARE_NAMED_TUNNELS_VERSION
-      ? CLOUDFLARE_NAMED_TUNNELS_VERSION
-      : CLOUDFLARE_NAMED_TUNNELS_VERSION;
+    const version = parsed.version === CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION
+      ? CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION
+      : CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION;
 
     return {
       version,
@@ -1449,10 +1470,10 @@ const readManagedRemoteTunnelConfigFromDisk = async () => {
     };
   } catch (error) {
     if (error && typeof error === 'object' && error.code === 'ENOENT') {
-      return { version: CLOUDFLARE_NAMED_TUNNELS_VERSION, tunnels: [] };
+      return migrateManagedRemoteTunnelConfigFromLegacyFile();
     }
     console.warn('Failed to read managed remote tunnel config file:', error);
-    return { version: CLOUDFLARE_NAMED_TUNNELS_VERSION, tunnels: [] };
+    return { version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION, tunnels: [] };
   }
 };
 
@@ -1465,12 +1486,12 @@ const updateManagedRemoteTunnelConfig = async (mutate) => {
   persistManagedRemoteTunnelConfigLock = persistManagedRemoteTunnelConfigLock.then(async () => {
     const current = await readManagedRemoteTunnelConfigFromDisk();
     const next = mutate({
-      version: CLOUDFLARE_NAMED_TUNNELS_VERSION,
+      version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION,
       tunnels: sanitizeManagedRemoteTunnelConfigEntries(current.tunnels),
     });
 
     await writeManagedRemoteTunnelConfigToDisk({
-      version: CLOUDFLARE_NAMED_TUNNELS_VERSION,
+      version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION,
       tunnels: sanitizeManagedRemoteTunnelConfigEntries(next?.tunnels),
     });
   });
@@ -1501,7 +1522,7 @@ const syncManagedRemoteTunnelConfigWithPresets = async (presets) => {
     }
 
     return {
-      version: CLOUDFLARE_NAMED_TUNNELS_VERSION,
+      version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION,
       tunnels: nextTunnels,
     };
   });
@@ -1530,7 +1551,7 @@ const upsertManagedRemoteTunnelToken = async ({ id, name, hostname, token }) => 
     });
 
     return {
-      version: CLOUDFLARE_NAMED_TUNNELS_VERSION,
+      version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION,
       tunnels: withoutConflicts,
     };
   });
@@ -2016,8 +2037,20 @@ const sanitizeSettingsUpdate = (payload) => {
   if (typeof candidate.tunnelSessionTtlMs === 'number' && Number.isFinite(candidate.tunnelSessionTtlMs)) {
     result.tunnelSessionTtlMs = normalizeTunnelSessionTtlMs(candidate.tunnelSessionTtlMs);
   }
+  if (typeof candidate.tunnelProvider === 'string') {
+    const provider = normalizeTunnelProvider(candidate.tunnelProvider);
+    if (provider) {
+      result.tunnelProvider = provider;
+    }
+  }
   if (typeof candidate.tunnelMode === 'string') {
     result.tunnelMode = normalizeTunnelMode(candidate.tunnelMode);
+  }
+  if (candidate.managedLocalTunnelConfigPath === null) {
+    result.managedLocalTunnelConfigPath = null;
+  } else if (typeof candidate.managedLocalTunnelConfigPath === 'string') {
+    const trimmed = candidate.managedLocalTunnelConfigPath.trim();
+    result.managedLocalTunnelConfigPath = trimmed.length > 0 ? normalizeOptionalPath(trimmed) : null;
   }
   if (typeof candidate.managedRemoteTunnelHostname === 'string') {
     const hostname = normalizeManagedRemoteTunnelHostname(candidate.managedRemoteTunnelHostname);
@@ -2599,16 +2632,78 @@ const migrateSettingsNotificationDefaults = async (current) => {
   return { settings: changed ? next : settings, changed };
 };
 
+const migrateSettingsFromLegacyNamedTunnelKeys = async (current) => {
+  const settings = current && typeof current === 'object' ? current : {};
+  const next = { ...settings };
+  let changed = false;
+
+  if (!Object.prototype.hasOwnProperty.call(next, 'managedRemoteTunnelHostname')
+    && Object.prototype.hasOwnProperty.call(next, 'namedTunnelHostname')) {
+    next.managedRemoteTunnelHostname = normalizeManagedRemoteTunnelHostname(next.namedTunnelHostname);
+    changed = true;
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(next, 'managedRemoteTunnelToken')
+    && Object.prototype.hasOwnProperty.call(next, 'namedTunnelToken')) {
+    if (next.namedTunnelToken === null) {
+      next.managedRemoteTunnelToken = null;
+    } else if (typeof next.namedTunnelToken === 'string') {
+      next.managedRemoteTunnelToken = next.namedTunnelToken.trim();
+    }
+    changed = true;
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(next, 'managedRemoteTunnelPresets')
+    && Object.prototype.hasOwnProperty.call(next, 'namedTunnelPresets')) {
+    next.managedRemoteTunnelPresets = normalizeManagedRemoteTunnelPresets(next.namedTunnelPresets);
+    changed = true;
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(next, 'managedRemoteTunnelPresetTokens')
+    && Object.prototype.hasOwnProperty.call(next, 'namedTunnelPresetTokens')) {
+    next.managedRemoteTunnelPresetTokens = normalizeManagedRemoteTunnelPresetTokens(next.namedTunnelPresetTokens);
+    changed = true;
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(next, 'managedRemoteTunnelSelectedPresetId')
+    && Object.prototype.hasOwnProperty.call(next, 'namedTunnelSelectedPresetId')) {
+    const selectedPresetId = typeof next.namedTunnelSelectedPresetId === 'string'
+      ? next.namedTunnelSelectedPresetId.trim()
+      : '';
+    if (selectedPresetId) {
+      next.managedRemoteTunnelSelectedPresetId = selectedPresetId;
+    }
+    changed = true;
+  }
+
+  const legacyKeys = [
+    'namedTunnelHostname',
+    'namedTunnelToken',
+    'namedTunnelPresets',
+    'namedTunnelPresetTokens',
+    'namedTunnelSelectedPresetId',
+  ];
+  for (const key of legacyKeys) {
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      delete next[key];
+      changed = true;
+    }
+  }
+
+  return { settings: changed ? next : settings, changed };
+};
+
 const readSettingsFromDiskMigrated = async () => {
   const current = await readSettingsFromDisk();
   const migration1 = await migrateSettingsFromLegacyLastDirectory(current);
   const migration2 = await migrateSettingsFromLegacyThemePreferences(migration1.settings);
   const migration3 = await migrateSettingsFromLegacyCollapsedProjects(migration2.settings);
   const migration4 = await migrateSettingsNotificationDefaults(migration3.settings);
-  if (migration1.changed || migration2.changed || migration3.changed || migration4.changed) {
-    await writeSettingsToDisk(migration4.settings);
+  const migration5 = await migrateSettingsFromLegacyNamedTunnelKeys(migration4.settings);
+  if (migration1.changed || migration2.changed || migration3.changed || migration4.changed || migration5.changed) {
+    await writeSettingsToDisk(migration5.settings);
   }
-  return migration4.settings;
+  return migration5.settings;
 };
 
 const getOrCreateVapidKeys = async () => {
@@ -7899,7 +7994,8 @@ async function main(options = {}) {
         : normalizeTunnelMode(modeInput);
       const selectedPresetId = typeof _req?.body?.managedRemoteTunnelPresetId === 'string' ? _req.body.managedRemoteTunnelPresetId.trim() : '';
       const selectedPresetName = typeof _req?.body?.managedRemoteTunnelPresetName === 'string' ? _req.body.managedRemoteTunnelPresetName.trim() : '';
-      const requestConfigPath = normalizeOptionalPath(_req?.body?.configPath);
+      const requestConfigPath = normalizeOptionalPath(_req?.body?.configPath)
+        ?? normalizeOptionalPath(settings?.managedLocalTunnelConfigPath);
       const requestManagedRemoteHostname = normalizeManagedRemoteTunnelHostname(_req?.body?.managedRemoteTunnelHostname);
       const requestTunnelHostname = normalizeManagedRemoteTunnelHostname(_req?.body?.tunnelHostname);
       const requestHostname = normalizeManagedRemoteTunnelHostname(_req?.body?.hostname);

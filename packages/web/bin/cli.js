@@ -3,8 +3,10 @@
 import path from 'path';
 import fs from 'fs';
 import net from 'net';
+import os from 'os';
 import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
+import { cloudflareTunnelProviderCapabilities } from '../server/lib/tunnels/providers/cloudflare.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,6 +25,7 @@ function getBunBinary() {
 }
 
 const BUN_BIN = getBunBinary();
+const DEFAULT_TUNNEL_PROVIDER_CAPABILITIES = [cloudflareTunnelProviderCapabilities];
 
 function importFromFilePath(filePath) {
   return import(pathToFileURL(filePath).href);
@@ -221,6 +224,7 @@ COMMANDS:
   stop           Stop running instance(s)
   restart        Stop and start the server
   status         Show server status
+  tunnel-providers  Show tunnel provider capabilities
   update         Check for and install updates
 
 OPTIONS:
@@ -256,8 +260,75 @@ EXAMPLES:
   openchamber stop               # Stop all running instances
   openchamber stop --port 3000   # Stop specific instance
   openchamber status             # Check status
+  openchamber tunnel-providers   # Print tunnel provider capability descriptors
   openchamber update             # Update to latest version
 `);
+}
+
+function listRunningInstancePorts() {
+  const ports = [];
+  try {
+    const tmpDir = os.tmpdir();
+    const files = fs.readdirSync(tmpDir);
+    const pidFiles = files.filter((file) => file.startsWith('openchamber-') && file.endsWith('.pid'));
+    for (const file of pidFiles) {
+      const port = parseInt(file.replace('openchamber-', '').replace('.pid', ''), 10);
+      if (!Number.isFinite(port) || port <= 0) {
+        continue;
+      }
+      const pidFilePath = path.join(tmpDir, file);
+      const pid = readPidFile(pidFilePath);
+      if (pid && isProcessRunning(pid)) {
+        ports.push(port);
+      }
+    }
+  } catch {
+  }
+  return Array.from(new Set(ports));
+}
+
+async function fetchTunnelProvidersFromPort(port, fetchImpl = globalThis.fetch) {
+  if (!Number.isFinite(port) || port <= 0 || typeof fetchImpl !== 'function') {
+    return null;
+  }
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${port}/api/openchamber/tunnel/providers`);
+    if (!response.ok) {
+      return null;
+    }
+    const body = await response.json().catch(() => null);
+    if (!body || !Array.isArray(body.providers)) {
+      return null;
+    }
+    return body.providers;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveTunnelProviders(options = {}, deps = {}) {
+  const readPorts = typeof deps.readPorts === 'function' ? deps.readPorts : listRunningInstancePorts;
+  const fetchImpl = typeof deps.fetchImpl === 'function' ? deps.fetchImpl : globalThis.fetch;
+  const candidatePorts = [];
+  if (Number.isFinite(options.port) && options.port > 0) {
+    candidatePorts.push(options.port);
+  }
+  candidatePorts.push(...readPorts());
+  if (!candidatePorts.includes(DEFAULT_PORT)) {
+    candidatePorts.push(DEFAULT_PORT);
+  }
+
+  for (const port of candidatePorts) {
+    const providers = await fetchTunnelProvidersFromPort(port, fetchImpl);
+    if (providers) {
+      return { providers, source: `api:${port}` };
+    }
+  }
+
+  return {
+    providers: DEFAULT_TUNNEL_PROVIDER_CAPABILITIES,
+    source: 'fallback',
+  };
 }
 
 const WINDOWS_EXTENSIONS = process.platform === 'win32'
@@ -1071,6 +1142,14 @@ const commands = {
     }
   },
 
+  async 'tunnel-providers'(options) {
+    const { providers, source } = await resolveTunnelProviders(options);
+    if (source === 'fallback') {
+      console.warn('Warning: Could not reach a running OpenChamber server; using built-in provider capabilities.');
+    }
+    console.log(JSON.stringify({ providers }, null, 2));
+  },
+
   async update() {
     const os = await import('os');
     const tmpDir = os.tmpdir();
@@ -1248,4 +1327,4 @@ if (isCliExecution) {
   main();
 }
 
-export { commands, parseArgs, getPidFilePath };
+export { commands, parseArgs, getPidFilePath, resolveTunnelProviders, fetchTunnelProvidersFromPort };

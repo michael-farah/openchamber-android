@@ -84,7 +84,7 @@ describe('managed local cloudflare tunnel startup', () => {
       const missingPath = path.join(tempDir, 'missing.yml');
       await expect(startCloudflareManagedLocalTunnel({
         configPath: missingPath,
-      })).rejects.toThrow(/config not found/i);
+      })).rejects.toThrow(/file was not found/i);
     } finally {
       cleanupBinary();
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -100,7 +100,7 @@ describe('managed local cloudflare tunnel startup', () => {
 
       await expect(startCloudflareManagedLocalTunnel({
         configPath,
-      })).rejects.toThrow(/invalid YAML/i);
+      })).rejects.toThrow(/config is invalid/i);
     } finally {
       cleanupBinary();
       fs.rmSync(tempDir, { recursive: true, force: true });
