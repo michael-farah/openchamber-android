@@ -217,6 +217,14 @@ const compareSessionsByPinnedAndTime = (
   return getSessionUpdatedAt(b) - getSessionUpdatedAt(a);
 };
 
+const dedupeSessionsById = (sessions: Session[]): Session[] => {
+  const byId = new Map<string, Session>();
+  sessions.forEach((session) => {
+    byId.set(session.id, session);
+  });
+  return Array.from(byId.values());
+};
+
 // Format project label: kebab-case/snake_case → Title Case
 const formatProjectLabel = (label: string): string => {
   return label
@@ -276,6 +284,7 @@ type SessionGroup = {
   branch: string | null;
   description: string | null;
   isMain: boolean;
+  isArchivedBucket?: boolean;
   worktree: WorktreeMetadata | null;
   directory: string | null;
   sessions: SessionNode[];
@@ -800,6 +809,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   const [deleteSessionConfirm, setDeleteSessionConfirm] = React.useState<{
     session: Session;
     descendantCount: number;
+    archivedBucket: boolean;
   } | null>(null);
   const [deleteFolderConfirm, setDeleteFolderConfirm] = React.useState<{
     scopeKey: string;
@@ -990,6 +1000,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   const gitDirectories = useGitStore((state) => state.directories);
 
   const sessions = useSessionStore((state) => state.sessions);
+  const archivedSessions = useSessionStore((state) => state.archivedSessions);
   const sessionsByDirectory = useSessionStore((state) => state.sessionsByDirectory);
   const currentSessionId = useSessionStore((state) => state.currentSessionId);
   const newSessionDraftOpen = useSessionStore((state) => Boolean(state.newSessionDraft?.open));
@@ -1514,49 +1525,65 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
   const deleteSession = useSessionStore((state) => state.deleteSession);
   const deleteSessions = useSessionStore((state) => state.deleteSessions);
+  const archiveSession = useSessionStore((state) => state.archiveSession);
+  const archiveSessions = useSessionStore((state) => state.archiveSessions);
 
   const executeDeleteSession = React.useCallback(
-    async (session: Session) => {
+    async (session: Session, source?: { archivedBucket?: boolean }) => {
       const descendants = collectDescendants(session.id);
+      const shouldHardDelete = source?.archivedBucket === true;
       if (descendants.length === 0) {
-        const success = await deleteSession(session.id);
+        const success = shouldHardDelete
+          ? await deleteSession(session.id)
+          : await archiveSession(session.id);
         if (success) {
-          toast.success('Session deleted');
+          toast.success(shouldHardDelete ? 'Session deleted' : 'Session archived');
         } else {
-          toast.error('Failed to delete session');
+          toast.error(shouldHardDelete ? 'Failed to delete session' : 'Failed to archive session');
         }
         return;
       }
 
       const ids = [session.id, ...descendants.map((s) => s.id)];
-      const { deletedIds, failedIds } = await deleteSessions(ids);
-      if (deletedIds.length > 0) {
-        toast.success(`Deleted ${deletedIds.length} session${deletedIds.length === 1 ? '' : 's'}`);
+      if (shouldHardDelete) {
+        const { deletedIds, failedIds } = await deleteSessions(ids);
+        if (deletedIds.length > 0) {
+          toast.success(`Deleted ${deletedIds.length} session${deletedIds.length === 1 ? '' : 's'}`);
+        }
+        if (failedIds.length > 0) {
+          toast.error(`Failed to delete ${failedIds.length} session${failedIds.length === 1 ? '' : 's'}`);
+        }
+        return;
+      }
+
+      const { archivedIds, failedIds } = await archiveSessions(ids);
+      if (archivedIds.length > 0) {
+        toast.success(`Archived ${archivedIds.length} session${archivedIds.length === 1 ? '' : 's'}`);
       }
       if (failedIds.length > 0) {
-        toast.error(`Failed to delete ${failedIds.length} session${failedIds.length === 1 ? '' : 's'}`);
+        toast.error(`Failed to archive ${failedIds.length} session${failedIds.length === 1 ? '' : 's'}`);
       }
     },
-    [collectDescendants, deleteSession, deleteSessions],
+    [archiveSession, archiveSessions, collectDescendants, deleteSession, deleteSessions],
   );
 
   const handleDeleteSession = React.useCallback(
-    (session: Session) => {
+    (session: Session, source?: { archivedBucket?: boolean }) => {
       const descendants = collectDescendants(session.id);
       if (!showDeletionDialog) {
-        void executeDeleteSession(session);
+        void executeDeleteSession(session, source);
         return;
       }
-      setDeleteSessionConfirm({ session, descendantCount: descendants.length });
+      setDeleteSessionConfirm({ session, descendantCount: descendants.length, archivedBucket: source?.archivedBucket === true });
     },
     [collectDescendants, showDeletionDialog, executeDeleteSession],
   );
 
   const confirmDeleteSession = React.useCallback(async () => {
     if (!deleteSessionConfirm) return;
-    const { session } = deleteSessionConfirm;
+    const { session, archivedBucket } = deleteSessionConfirm;
     setDeleteSessionConfirm(null);
-    await executeDeleteSession(session);
+    await executeDeleteSession(session, { archivedBucket });
   }, [deleteSessionConfirm, executeDeleteSession]);
 
   const confirmDeleteFolder = React.useCallback(() => {
@@ -1649,7 +1676,8 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
       projectIsRepo: boolean,
     ) => {
       const normalizedProjectRoot = normalizePath(projectRoot ?? null);
-      const sortedProjectSessions = [...projectSessions].sort((a, b) => compareSessionsByPinnedAndTime(a, b, pinnedSessionIds));
+      const sortedProjectSessions = dedupeSessionsById(projectSessions)
+        .sort((a, b) => compareSessionsByPinnedAndTime(a, b, pinnedSessionIds));
 
       const sessionMap = new Map(sortedProjectSessions.map((session) => [session.id, session]));
       const childrenMap = new Map<string, Session[]>();
@@ -1708,15 +1736,29 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
       const groupedNodes = new Map<string, SessionNode[]>();
       const groupOrder = new Map<string, number>();
+      const archivedKey = '__archived__';
 
       const getGroupKey = (session: Session) => {
+        if (session.time?.archived) {
+          return archivedKey;
+        }
         const metadataPath = normalizePath(worktreeMetadata.get(session.id)?.path ?? null);
         const sessionDirectory = normalizePath((session as Session & { directory?: string | null }).directory ?? null);
-        const normalizedDir = metadataPath ?? sessionDirectory;
+        if (!metadataPath && !sessionDirectory) {
+          return archivedKey;
+        }
+        const fallbackDirectory = normalizePath((session as Session & { project?: { worktree?: string | null } | null }).project?.worktree ?? null);
+        const normalizedDir = metadataPath ?? sessionDirectory ?? fallbackDirectory;
+        if (!normalizedDir) {
+          return archivedKey;
+        }
         if (normalizedDir && normalizedDir !== normalizedProjectRoot && worktreeByPath.has(normalizedDir)) {
           return normalizedDir;
         }
-        return normalizedProjectRoot ?? '__project_root__';
+        if (normalizedDir === normalizedProjectRoot) {
+          return normalizedProjectRoot ?? '__project_root__';
+        }
+        return archivedKey;
       };
 
       roots.forEach((session, index) => {
@@ -1738,6 +1780,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         branch: projectRootBranch ?? null,
         description: normalizedProjectRoot ? formatPathForDisplay(normalizedProjectRoot, homeDirectory) : null,
         isMain: true,
+        isArchivedBucket: false,
         worktree: null,
         directory: normalizedProjectRoot,
         sessions: groupedNodes.get(rootKey) ?? [],
@@ -1768,29 +1811,23 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
           branch: currentBranch || metadataBranch,
           description: formatPathForDisplay(directory, homeDirectory),
           isMain: false,
+          isArchivedBucket: false,
           worktree: meta,
           directory,
           sessions: groupedNodes.get(directory) ?? [],
         });
       });
 
-      const represented = new Set(groups.map((group) => group.directory).filter((value): value is string => Boolean(value)));
-      const orphanKeys = Array.from(groupedNodes.keys())
-        .filter((key) => !represented.has(key) && key !== rootKey)
-        .sort((a, b) => (groupOrder.get(a) ?? 0) - (groupOrder.get(b) ?? 0));
-
-      orphanKeys.forEach((directory) => {
-        const currentBranch = gitDirectories.get(directory)?.status?.current?.trim() || null;
-        groups.push({
-          id: `worktree:orphan:${directory}`,
-          label: formatDirectoryName(directory, homeDirectory) || directory,
-          branch: currentBranch,
-          description: formatPathForDisplay(directory, homeDirectory),
-          isMain: false,
-          worktree: null,
-          directory,
-          sessions: groupedNodes.get(directory) ?? [],
-        });
+      groups.push({
+        id: 'archived',
+        label: 'archived',
+        branch: null,
+        description: 'Archived and unassigned sessions',
+        isMain: false,
+        isArchivedBucket: true,
+        worktree: null,
+        directory: null,
+        sessions: groupedNodes.get(archivedKey) ?? [],
       });
 
       return groups;
@@ -1965,6 +2002,50 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     [availableWorktreesByProject, getSessionsByDirectory, sessionsByDirectory, isVSCode],
   );
 
+  const getArchivedSessionsForProject = React.useCallback(
+    (project: { normalizedPath: string }) => {
+      const worktreesForProject = isVSCode ? [] : (availableWorktreesByProject.get(project.normalizedPath) ?? []);
+      const validDirectories = new Set<string>([
+        project.normalizedPath,
+        ...worktreesForProject
+          .map((meta) => normalizePath(meta.path) ?? meta.path)
+          .filter((value): value is string => Boolean(value)),
+      ]);
+
+      const collect = (input: Session[]): Session[] => input.filter((session) => {
+        const sessionDirectory = normalizePath((session as Session & { directory?: string | null }).directory ?? null);
+        const projectWorktree = normalizePath((session as Session & { project?: { worktree?: string | null } | null }).project?.worktree ?? null);
+        const resolved = sessionDirectory ?? projectWorktree;
+        if (!resolved) {
+          return false;
+        }
+        if (validDirectories.has(resolved)) {
+          return true;
+        }
+        return resolved.startsWith(`${project.normalizedPath}/`);
+      });
+
+      const archived = collect(archivedSessions);
+      const unassignedLive = sessions.filter((session) => {
+        if (session.time?.archived) {
+          return false;
+        }
+        const sessionDirectory = normalizePath((session as Session & { directory?: string | null }).directory ?? null);
+        if (sessionDirectory) {
+          return false;
+        }
+        const projectWorktree = normalizePath((session as Session & { project?: { worktree?: string | null } | null }).project?.worktree ?? null);
+        if (!projectWorktree) {
+          return false;
+        }
+        return projectWorktree === project.normalizedPath || projectWorktree.startsWith(`${project.normalizedPath}/`);
+      });
+
+      return dedupeSessionsById([...archived, ...unassignedLive]);
+    },
+    [archivedSessions, availableWorktreesByProject, isVSCode, sessions],
+  );
+
   // Keep last-known repo status to avoid UI jiggling during project switch
   const lastRepoStatusRef = React.useRef(false);
   if (activeProjectId && projectRepoStatus.has(activeProjectId)) {
@@ -1973,7 +2054,10 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
   const projectSections = React.useMemo(() => {
     return normalizedProjects.map((project) => {
-      const projectSessions = getSessionsForProject(project);
+      const projectSessions = dedupeSessionsById([
+        ...getSessionsForProject(project),
+        ...getArchivedSessionsForProject(project),
+      ]);
       const worktreesForProject = availableWorktreesByProject.get(project.normalizedPath) ?? [];
       const isRepo = projectRepoStatus.has(project.id)
         ? Boolean(projectRepoStatus.get(project.id))
@@ -1990,7 +2074,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         groups,
       };
     });
-  }, [normalizedProjects, getSessionsForProject, buildGroupedSessions, availableWorktreesByProject, projectRootBranches, projectRepoStatus]);
+  }, [normalizedProjects, getSessionsForProject, getArchivedSessionsForProject, buildGroupedSessions, availableWorktreesByProject, projectRootBranches, projectRepoStatus]);
 
   const visibleProjectSections = React.useMemo(() => {
     if (projectSections.length === 0) {
@@ -2272,11 +2356,13 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
   const getOrderedGroups = React.useCallback(
     (projectId: string, groups: SessionGroup[]) => {
+      const archivedGroup = groups.find((group) => group.isArchivedBucket === true) ?? null;
+      const reorderableGroups = archivedGroup ? groups.filter((group) => group !== archivedGroup) : groups;
       const preferredOrder = groupOrderByProject.get(projectId);
       if (!preferredOrder || preferredOrder.length === 0) {
-        return groups;
+        return archivedGroup ? [...reorderableGroups, archivedGroup] : reorderableGroups;
       }
-      const groupById = new Map(groups.map((group) => [group.id, group]));
+      const groupById = new Map(reorderableGroups.map((group) => [group.id, group]));
       const ordered: SessionGroup[] = [];
       preferredOrder.forEach((id) => {
         const group = groupById.get(id);
@@ -2285,12 +2371,12 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
           groupById.delete(id);
         }
       });
-      groups.forEach((group) => {
+      reorderableGroups.forEach((group) => {
         if (groupById.has(group.id)) {
           ordered.push(group);
         }
       });
-      return ordered;
+      return archivedGroup ? [...ordered, archivedGroup] : ordered;
     },
     [groupOrderByProject],
   );
@@ -2365,7 +2451,13 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   }, [isDesktopShellRuntime, projectSections]);
 
   const renderSessionNode = React.useCallback(
-    (node: SessionNode, depth = 0, groupDirectory?: string | null, projectId?: string | null): React.ReactNode => {
+    (
+      node: SessionNode,
+      depth = 0,
+      groupDirectory?: string | null,
+      projectId?: string | null,
+      archivedBucket = false,
+    ): React.ReactNode => {
       const session = node.session;
       const sessionDirectory =
         normalizePath((session as Session & { directory?: string | null }).directory ?? null) ??
@@ -2774,10 +2866,10 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
                       className="text-destructive focus:text-destructive [&>svg]:mr-1"
-                      onClick={() => handleDeleteSession(session)}
+                      onClick={() => handleDeleteSession(session, { archivedBucket })}
                     >
                       <RiDeleteBinLine className="mr-1 h-4 w-4" />
-                      Remove
+                      {archivedBucket ? 'Delete permanently' : 'Archive'}
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -2787,7 +2879,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
           </DraggableSessionRow>
           {hasChildren && isExpanded
             ? node.children.map((child) =>
-                renderSessionNode(child, depth + 1, sessionDirectory ?? groupDirectory, projectId),
+                renderSessionNode(child, depth + 1, sessionDirectory ?? groupDirectory, projectId, archivedBucket),
               )
             : null}
         </React.Fragment>
@@ -3036,7 +3128,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
                 }}
               >
               {renderFolderItems()}
-              {visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId))}
+              {visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true))}
               {totalSessions === 0 && allFoldersForGroup.length === 0 ? (
                 <div className="py-1 text-left typography-micro text-muted-foreground">
                   No sessions in this workspace yet.
@@ -3205,7 +3297,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
                 }}
               >
                 {renderFolderItems()}
-                {visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId))}
+                {visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true))}
                 {totalSessions === 0 && allFoldersForGroup.length === 0 ? (
                   <div className="py-1 text-left typography-micro text-muted-foreground">
                     No sessions in this workspace yet.
@@ -3748,11 +3840,15 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
       <Dialog open={Boolean(deleteSessionConfirm)} onOpenChange={(open) => { if (!open) setDeleteSessionConfirm(null); }}>
         <DialogContent showCloseButton={false} className="max-w-sm gap-5">
           <DialogHeader>
-            <DialogTitle>Delete session?</DialogTitle>
+            <DialogTitle>{deleteSessionConfirm?.archivedBucket ? 'Delete session?' : 'Archive session?'}</DialogTitle>
             <DialogDescription>
               {deleteSessionConfirm && deleteSessionConfirm.descendantCount > 0
-                ? `"${deleteSessionConfirm.session.title || 'Untitled Session'}" and its ${deleteSessionConfirm.descendantCount} sub-task${deleteSessionConfirm.descendantCount === 1 ? '' : 's'} will be permanently deleted.`
-                : `"${deleteSessionConfirm?.session.title || 'Untitled Session'}" will be permanently deleted.`}
+                ? deleteSessionConfirm.archivedBucket
+                  ? `"${deleteSessionConfirm.session.title || 'Untitled Session'}" and its ${deleteSessionConfirm.descendantCount} sub-task${deleteSessionConfirm.descendantCount === 1 ? '' : 's'} will be permanently deleted.`
+                  : `"${deleteSessionConfirm.session.title || 'Untitled Session'}" and its ${deleteSessionConfirm.descendantCount} sub-task${deleteSessionConfirm.descendantCount === 1 ? '' : 's'} will be archived.`
+                : deleteSessionConfirm?.archivedBucket
+                  ? `"${deleteSessionConfirm?.session.title || 'Untitled Session'}" will be permanently deleted.`
+                  : `"${deleteSessionConfirm?.session.title || 'Untitled Session'}" will be archived.`}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="w-full sm:items-center sm:justify-between">
@@ -3778,7 +3874,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
                 onClick={() => void confirmDeleteSession()}
                 className="inline-flex h-8 items-center justify-center rounded-md bg-destructive px-3 typography-ui-label text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/50"
               >
-                Delete
+                {deleteSessionConfirm?.archivedBucket ? 'Delete' : 'Archive'}
               </button>
             </div>
           </DialogFooter>
