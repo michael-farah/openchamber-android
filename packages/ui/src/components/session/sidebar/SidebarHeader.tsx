@@ -10,7 +10,7 @@ import {
   RiArrowDownSLine,
   RiCheckLine,
   RiCloseLine,
-  RiFolderAddLine,
+  RiEqualizer2Line,
   RiNodeTree,
   RiPencilAiLine,
   RiSearchLine,
@@ -21,6 +21,7 @@ import { ProjectNotesTodoPanel } from '../ProjectNotesTodoPanel';
 import { formatDirectoryName } from '@/lib/utils';
 import { formatProjectLabel } from './utils';
 import type { ProjectRef } from '@/lib/openchamberConfig';
+import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 
 type ProjectItem = {
   id: string;
@@ -87,7 +88,6 @@ export function SidebarHeader(props: Props): React.ReactNode {
     projectRenameDraft,
     setProjectRenameDraft,
     removeProject,
-    handleOpenDirectoryDialog,
     addProjectButtonClass,
     headerActionIconClass,
     reserveHeaderActionsSpace,
@@ -108,6 +108,9 @@ export function SidebarHeader(props: Props): React.ReactNode {
     hasSessionSearchQuery,
     searchMatchCount,
   } = props;
+
+  const displayMode = useSessionDisplayStore((state) => state.displayMode);
+  const setDisplayMode = useSessionDisplayStore((state) => state.setDisplayMode);
 
   if (hideDirectoryControls) {
     return null;
@@ -219,15 +222,38 @@ export function SidebarHeader(props: Props): React.ReactNode {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <button
-            type="button"
-            onClick={handleOpenDirectoryDialog}
-            className={addProjectButtonClass}
-            aria-label="Add project"
-            title="Add project"
-          >
-            <RiFolderAddLine className={headerActionIconClass} />
-          </button>
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className={addProjectButtonClass}
+                    aria-label="Session display mode"
+                  >
+                    <RiEqualizer2Line className={headerActionIconClass} />
+                  </button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={4}><p>Display mode</p></TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="end" className="min-w-[160px]">
+              <DropdownMenuItem
+                onClick={() => setDisplayMode('default')}
+                className="flex items-center justify-between"
+              >
+                <span>Default</span>
+                {displayMode === 'default' ? <RiCheckLine className="h-4 w-4 text-primary" /> : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setDisplayMode('minimal')}
+                className="flex items-center justify-between"
+              >
+                <span>Minimal</span>
+                {displayMode === 'minimal' ? <RiCheckLine className="h-4 w-4 text-primary" /> : null}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       )}
 
@@ -235,7 +261,8 @@ export function SidebarHeader(props: Props): React.ReactNode {
         <div className="-ml-1 flex h-auto min-h-8 flex-col gap-1">
           {activeProjectForHeader ? (
             <>
-              <div className="flex h-8 -translate-y-px items-center gap-1.5 rounded-md pl-0 pr-1">
+              <div className="flex h-8 -translate-y-px items-center justify-between gap-1.5 rounded-md pl-0 pr-1">
+                <div className="flex items-center gap-1.5">
                 {stableActiveProjectIsRepo ? (
                   <>
                     <Tooltip>
@@ -328,6 +355,40 @@ export function SidebarHeader(props: Props): React.ReactNode {
                   </TooltipTrigger>
                   <TooltipContent side="bottom" sideOffset={4}><p>Search sessions</p></TooltipContent>
                 </Tooltip>
+                </div>
+
+                <DropdownMenu>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          className={headerActionButtonClass}
+                          aria-label="Session display mode"
+                        >
+                          <RiEqualizer2Line className={headerActionIconClass} />
+                        </button>
+                      </DropdownMenuTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" sideOffset={4}><p>Display mode</p></TooltipContent>
+                  </Tooltip>
+                  <DropdownMenuContent align="end" className="min-w-[160px]">
+                    <DropdownMenuItem
+                      onClick={() => setDisplayMode('default')}
+                      className="flex items-center justify-between"
+                    >
+                      <span>Default</span>
+                      {displayMode === 'default' ? <RiCheckLine className="h-4 w-4 text-primary" /> : null}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => setDisplayMode('minimal')}
+                      className="flex items-center justify-between"
+                    >
+                      <span>Minimal</span>
+                      {displayMode === 'minimal' ? <RiCheckLine className="h-4 w-4 text-primary" /> : null}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
 
               {isSessionSearchOpen ? (

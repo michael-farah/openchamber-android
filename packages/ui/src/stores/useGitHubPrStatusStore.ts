@@ -2,9 +2,9 @@ import { create } from 'zustand';
 import type { GitHubPullRequestStatus, RuntimeAPIs } from '@/lib/api/types';
 
 const PR_REVALIDATE_TTL_MS = 90_000;
-const PR_REVALIDATE_INTERVAL_MS = 30_000;
+const PR_REVALIDATE_INTERVAL_MS = 15_000;
 const PR_DISCOVERY_INTERVAL_MS = 5 * 60_000;
-const PR_BOOTSTRAP_RETRY_DELAYS_MS = [10_000, 30_000] as const;
+const PR_BOOTSTRAP_RETRY_DELAYS_MS = [2_000, 5_000] as const;
 const PR_OPEN_BUSY_INTERVAL_MS = 60_000;
 const PR_OPEN_DEFAULT_INTERVAL_MS = 2 * 60_000;
 const PR_OPEN_STABLE_INTERVAL_MS = 5 * 60_000;
@@ -222,7 +222,7 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>((set, get) => 
       bootstrapTimers.set(key, existing);
     };
 
-    void get().refresh(key, { silent: true, markInitialResolved: true });
+    void get().refresh(key, { force: true, silent: true, markInitialResolved: true });
     PR_BOOTSTRAP_RETRY_DELAYS_MS.forEach((delay) => runBootstrapRefresh(delay));
 
     const timerId = window.setInterval(() => {
