@@ -59,6 +59,8 @@ type PrStatusEntry = {
 
 type GitHubPrStatusStore = {
   entries: Record<string, PrStatusEntry>;
+  activeRequestCount: number;
+  totalRequestCount: number;
   ensureEntry: (key: string) => void;
   setParams: (key: string, params: PrRuntimeParams) => void;
   startWatching: (key: string) => void;
@@ -151,6 +153,8 @@ const mergeParams = (current: PrRuntimeParams | null, next: PrRuntimeParams): Pr
 
 export const useGitHubPrStatusStore = create<GitHubPrStatusStore>((set, get) => ({
   entries: {},
+  activeRequestCount: 0,
+  totalRequestCount: 0,
 
   ensureEntry: (key) => {
     set((state) => {
@@ -412,6 +416,11 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>((set, get) => 
     }
 
     try {
+      set((prev) => ({
+        ...prev,
+        activeRequestCount: prev.activeRequestCount + 1,
+        totalRequestCount: prev.totalRequestCount + 1,
+      }));
       const next = await params.github.prStatus(params.directory, params.branch, params.remoteName ?? undefined);
       set((prev) => {
         const nextEntries = { ...prev.entries };
@@ -477,6 +486,7 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>((set, get) => 
       });
     } finally {
       inFlightBySignature.delete(signature);
+      set((prev) => ({ ...prev, activeRequestCount: Math.max(0, prev.activeRequestCount - 1) }));
     }
   },
 

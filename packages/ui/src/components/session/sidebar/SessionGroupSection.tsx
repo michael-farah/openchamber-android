@@ -398,9 +398,46 @@ export function SessionGroupSection(props: Props): React.ReactNode {
           {group.isArchivedBucket ? (
             <RiArchiveLine className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
           ) : (!group.isMain || isGitProject) ? (
-            showInlinePrTitle && prIndicator ? null : (
+            showInlinePrTitle && prIndicator ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex">
+                    <RiGitBranchLine
+                      className="h-3.5 w-3.5 flex-shrink-0 translate-y-[0.5px] text-muted-foreground"
+                      style={branchIconColor ? { color: branchIconColor } : undefined}
+                    />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6} align="start" className="max-w-sm">
+                  <div className="space-y-1 text-xs">
+                    {(baseBranchLabel || headBranchLabel) ? (
+                      <div className="text-muted-foreground truncate">
+                        {baseBranchLabel && headBranchLabel ? (
+                          <>
+                            <span>{baseBranchLabel}</span>
+                            <RiArrowLeftLongLine className="mx-0.5 inline h-3 w-3 align-[-2px]" />
+                            <span>{headBranchLabel}</span>
+                          </>
+                        ) : (
+                          <span>{baseBranchLabel ?? headBranchLabel ?? ''}</span>
+                        )}
+                      </div>
+                    ) : null}
+                    {mergeStateLabel ? <div className="text-muted-foreground truncate">{mergeStateLabel}</div> : null}
+                    {(mergeabilityLabel || checksSummary) ? (
+                      <div className="text-muted-foreground truncate">
+                        {mergeabilityLabel ?? ''}
+                        {mergeabilityLabel && checksSummary ? ' • ' : ''}
+                        {checksSummary ?? ''}
+                        {checksTail ? ` (${checksTail})` : ''}
+                      </div>
+                    ) : null}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            ) : (
               <RiGitBranchLine
-                className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground"
+                className="h-3.5 w-3.5 flex-shrink-0 translate-y-[0.5px] text-muted-foreground"
                 style={branchIconColor ? { color: branchIconColor } : undefined}
               />
             )
@@ -411,22 +448,18 @@ export function SessionGroupSection(props: Props): React.ReactNode {
                 <>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <span className="inline-flex items-center gap-1">
-                        <RiGitBranchLine
-                          className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground"
-                          style={branchIconColor ? { color: branchIconColor } : undefined}
-                        />
+                      <span className="inline-flex items-baseline gap-1">
                         {prIndicator.url ? (
                           <button
                             type="button"
-                            className="underline hover:no-underline"
+                            className="inline-flex items-baseline leading-none underline hover:no-underline"
                             onMouseDown={(event) => event.stopPropagation()}
                             onClick={handlePrLinkClick}
                           >
                             #{prIndicator.number}
                           </button>
                         ) : (
-                          <span>#{prIndicator.number}</span>
+                          <span className="leading-none">#{prIndicator.number}</span>
                         )}
                       </span>
                     </TooltipTrigger>
