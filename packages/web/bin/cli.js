@@ -1247,6 +1247,17 @@ function redactProfilesForOutput(profiles, showSecrets = false) {
   return profiles.map((entry) => redactProfileForOutput(entry, showSecrets));
 }
 
+function formatProfileTokenStatus(profile, showSecrets = false) {
+  const token = typeof profile?.token === 'string' ? profile.token.trim() : '';
+  if (!token) {
+    return 'token:missing';
+  }
+  if (showSecrets) {
+    return `token:${token}`;
+  }
+  return 'token:present';
+}
+
 function sanitizeTunnelProfilesData(data) {
   const parsed = data && typeof data === 'object' ? data : {};
   const list = Array.isArray(parsed.profiles) ? parsed.profiles : [];
@@ -2199,7 +2210,7 @@ async function handleTunnelProfileSubcommand(options, action) {
     if (!options.quiet) {
       clackIntro('Tunnel Profiles');
       for (const profile of profiles) {
-        logStatus('success', `${profile.name} (${profile.provider}/${profile.mode})`, `${profile.hostname} token:${maskToken(profile.token)}`);
+        logStatus('success', `${profile.name} (${profile.provider}/${profile.mode})`, `${profile.hostname} ${formatProfileTokenStatus(profile, options.showSecrets)}`);
       }
       clackOutro(`${profiles.length} profile(s)`);
     }
@@ -2221,7 +2232,7 @@ async function handleTunnelProfileSubcommand(options, action) {
     }
     if (!options.quiet) {
       clackIntro('Tunnel Profile');
-      logStatus('success', `${profile.name} (${profile.provider}/${profile.mode})`, `${profile.hostname} token:${maskToken(profile.token)}`);
+      logStatus('success', `${profile.name} (${profile.provider}/${profile.mode})`, `${profile.hostname} ${formatProfileTokenStatus(profile, options.showSecrets)}`);
       clackOutro('show complete');
     }
     return;
@@ -2287,7 +2298,7 @@ async function handleTunnelProfileSubcommand(options, action) {
         console.log(JSON.stringify(dryRunResult, null, 2));
       } else if (!options.quiet) {
         clackIntro('Tunnel Profile Add (dry-run)');
-        logStatus('info', `Would ${existingIndex >= 0 ? 'overwrite' : 'create'}: ${name} (${provider}/${mode})`, `${hostname} token:${maskToken(token)}`);
+        logStatus('info', `Would ${existingIndex >= 0 ? 'overwrite' : 'create'}: ${name} (${provider}/${mode})`, `${hostname} ${formatProfileTokenStatus({ token }, options.showSecrets)}`);
         clackOutro('dry-run complete (no changes applied)');
       }
       return;
@@ -2329,7 +2340,7 @@ async function handleTunnelProfileSubcommand(options, action) {
 
     if (!options.quiet) {
       clackIntro('Tunnel Profile Saved');
-      logStatus('success', `${added.name} (${added.provider}/${added.mode})`, `${added.hostname} token:${maskToken(added.token)}`);
+      logStatus('success', `${added.name} (${added.provider}/${added.mode})`, `${added.hostname} ${formatProfileTokenStatus(added, options.showSecrets)}`);
       clackOutro('save complete');
       clackNote(`start this profile with \`openchamber tunnel start --profile ${added.name}\``, 'Hint');
     }
