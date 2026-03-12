@@ -8033,6 +8033,12 @@ async function main(options = {}) {
       const requestToken = typeof body.token === 'string'
         ? body.token.trim()
         : '';
+      const requestTokenProvided = body.managedRemoteTunnelTokenProvided === true
+        || body.tunnelTokenProvided === true
+        || body.tokenProvided === true;
+      const requestHostnameProvided = body.managedRemoteTunnelHostnameProvided === true
+        || body.tunnelHostnameProvided === true
+        || body.hostnameProvided === true;
       const storedManagedRemoteToken = typeof settings?.managedRemoteTunnelToken === 'string'
         ? settings.managedRemoteTunnelToken.trim()
         : '';
@@ -8058,6 +8064,8 @@ async function main(options = {}) {
         mode: modeFilter,
         hostname,
         token,
+        tokenProvided: requestTokenProvided,
+        hostnameProvided: requestHostnameProvided,
         configPath: requestConfigPath,
         hasSavedManagedRemoteProfile,
       };

@@ -175,6 +175,11 @@ export function createCloudflareTunnelProvider() {
       const remoteTokenValidation = validateTokenShape(request.token);
       const tokenMissing = typeof request.token !== 'string' || request.token.trim().length === 0;
       const hasSavedManagedRemoteProfile = request.hasSavedManagedRemoteProfile === true;
+      const tokenProvided = request.tokenProvided === true;
+      const hostnameProvided = request.hostnameProvided === true;
+      const hasExplicitManagedRemoteInput = tokenProvided || hostnameProvided;
+      const canUseSavedProfileForHostname = !hasExplicitManagedRemoteInput && hostnameMissing && hasSavedManagedRemoteProfile;
+      const canUseSavedProfileForToken = !hasExplicitManagedRemoteInput && tokenMissing && hasSavedManagedRemoteProfile;
       const savedProfileReadyDetail = 'at least one saved profile present';
       const managedRemoteChecks = [
         {
@@ -186,18 +191,18 @@ export function createCloudflareTunnelProvider() {
         {
           id: 'managed_remote_hostname',
           label: 'Managed remote hostname',
-          status: normalizedHost || (hostnameMissing && hasSavedManagedRemoteProfile) ? 'pass' : 'fail',
+          status: normalizedHost || canUseSavedProfileForHostname ? 'pass' : 'fail',
           detail: normalizedHost
             ? normalizedHost
-            : (hostnameMissing && hasSavedManagedRemoteProfile)
+            : canUseSavedProfileForHostname
               ? savedProfileReadyDetail
               : 'Managed remote hostname is required (use --hostname).',
         },
         {
           id: 'managed_remote_token',
           label: 'Managed remote token',
-          status: remoteTokenValidation.ok || (tokenMissing && hasSavedManagedRemoteProfile) ? 'pass' : 'fail',
-          detail: (tokenMissing && hasSavedManagedRemoteProfile)
+          status: remoteTokenValidation.ok || canUseSavedProfileForToken ? 'pass' : 'fail',
+          detail: canUseSavedProfileForToken
             ? savedProfileReadyDetail
             : remoteTokenValidation.detail,
         },

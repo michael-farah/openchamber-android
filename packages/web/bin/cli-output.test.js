@@ -34,7 +34,7 @@ describe('cli output mode helpers', () => {
   });
 
   it('matches tty capability when human output is enabled', () => {
-    expect(canPrompt({ json: false, quiet: false })).toBe(Boolean(process.stdout?.isTTY));
+    expect(canPrompt({ json: false, quiet: false })).toBe(Boolean(process.stdout?.isTTY) && Boolean(process.stdin?.isTTY));
   });
 
   it('printJson defaults status to ok', () => {

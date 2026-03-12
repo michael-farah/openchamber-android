@@ -620,10 +620,36 @@ function parseArgs(argv = process.argv.slice(2)) {
     switch (name) {
       case 'port':
       case 'p': {
-        const { value, nextIndex } = consumeValue(i, inlineValue);
+        const { value: consumedValue, nextIndex: consumedIndex } = consumeValue(i, inlineValue);
+        let value = consumedValue;
+        let nextIndex = consumedIndex;
+
+        // Support explicit negative numeric values like `-p -1` so we can report
+        // a clear range validation error instead of "Unknown option".
+        if (value === undefined && typeof inlineValue !== 'string') {
+          const candidate = args[i + 1];
+          if (typeof candidate === 'string' && /^-\d+$/.test(candidate)) {
+            value = candidate;
+            nextIndex = i + 1;
+          }
+        }
+
         i = nextIndex;
-        const parsed = parseInt(value ?? '', 10);
-        options.port = (Number.isFinite(parsed) && parsed >= 1 && parsed <= 65535) ? parsed : DEFAULT_PORT;
+
+        if (typeof value !== 'string' || value.trim().length === 0) {
+          throw new TunnelCliError('Missing value for --port.', EXIT_CODE.USAGE_ERROR);
+        }
+
+        if (!/^-?\d+$/.test(value.trim())) {
+          throw new TunnelCliError(`Invalid port value: ${value}`, EXIT_CODE.USAGE_ERROR);
+        }
+
+        const parsed = parseInt(value, 10);
+        if (parsed < 1 || parsed > 65535) {
+          throw new TunnelCliError(`Invalid port value: ${parsed}`, EXIT_CODE.USAGE_ERROR);
+        }
+
+        options.port = parsed;
         options.explicitPort = true;
         break;
       }
@@ -3335,6 +3361,7 @@ const commands = {
 
         let doctorProfile = null;
         let doctorHostnameOverride = typeof options.hostname === 'string' ? options.hostname.trim() : '';
+        const explicitHostnameProvided = doctorHostnameOverride.length > 0;
         const explicitTokenProvided = Boolean(options.tokenStdin)
           || (typeof options.token === 'string' && options.token.trim().length > 0)
           || (typeof options.tokenFile === 'string' && options.tokenFile.trim().length > 0);
@@ -3393,6 +3420,8 @@ const commands = {
             query.set('hasSavedManagedRemoteProfile', '1');
           }
           const doctorBody = {};
+          doctorBody.managedRemoteTunnelTokenProvided = explicitTokenProvided;
+          doctorBody.managedRemoteTunnelHostnameProvided = explicitHostnameProvided;
           if (typeof doctorTokenValue === 'string' && doctorTokenValue.trim().length > 0) {
             doctorBody.managedRemoteTunnelToken = doctorTokenValue;
           }

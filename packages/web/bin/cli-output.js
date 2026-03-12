@@ -69,10 +69,10 @@ function logStatus(status, message, detail) {
 // ── TTY detection ───────────────────────────────────────────────
 
 /**
- * Whether stdout is an interactive TTY.
- * All interactive prompts (confirm, select, password) must guard on this.
+ * Whether both stdout and stdin are interactive TTYs.
+ * Prompts must be disabled when stdin is piped (e.g. --token-stdin).
  */
-const isTTY = Boolean(process.stdout?.isTTY);
+const isTTY = Boolean(process.stdout?.isTTY) && Boolean(process.stdin?.isTTY);
 
 function isJsonMode(options) {
   return Boolean(options?.json);
