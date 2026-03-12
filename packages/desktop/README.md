@@ -43,6 +43,14 @@ Currently available for macOS (Apple Silicon).
 - Fast switching between local and remote instances
 - Workspace-first startup flow with directory picker and steadier window restore behavior
 
+### Remote Tunnel (Desktop)
+
+- Configure in **Settings -> OpenChamber -> Remote Tunnel**.
+- Supported Cloudflare modes: **Quick**, **Managed Remote**, **Managed Local**.
+- One active tunnel per Desktop instance. Starting a different mode replaces the current tunnel.
+- Replacing or stopping a tunnel revokes existing connect links and invalidates remote tunnel sessions.
+- Connect links are one-time tokens; generate a new link for each new connection attempt.
+
 ## Development
 
 ```bash

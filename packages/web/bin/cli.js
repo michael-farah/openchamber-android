@@ -885,6 +885,11 @@ OUTPUT OPTIONS:
   -q, --quiet             Suppress non-essential output
   --json                  Output machine-readable JSON
 
+BEHAVIOR NOTES:
+  - One active tunnel per OpenChamber instance.
+  - Starting a different mode/provider replaces the current tunnel and revokes old connect links/sessions.
+  - Connect links are one-time; generating a new link revokes the previous unused link.
+
 PROFILE USAGE:
   openchamber tunnel profile list [--provider <id>] [--json]
   openchamber tunnel profile show --name <name> [--provider <id>] [--json]

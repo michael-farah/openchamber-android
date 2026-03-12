@@ -166,7 +166,15 @@ OpenChamber also supports managed-remote mode for more reliable long-lived acces
 - Configure it in-app at **Settings -> OpenChamber -> Tunnel** and switch mode to **Managed Remote Tunnel**.
 - Managed-remote tunnels require a domain in your Cloudflare account.
 - Cloudflare setup guide: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/
-- CLI note: `--tunnel [config.yml]` enables managed-local Cloudflare tunnels.
+- Managed-local mode uses your local cloudflared config, for example:
+  - `openchamber tunnel start --provider cloudflare --mode managed-local --config ~/.cloudflared/config.yml`
+
+### Tunnel behavior notes
+
+- OpenChamber supports one active tunnel per running instance (port).
+- Starting a tunnel with a different mode/provider on the same instance replaces the current tunnel.
+- Replacing or stopping a tunnel revokes existing connect links and invalidates remote tunnel sessions for that instance.
+- Connect links are one-time tokens; generating a new link revokes the previous unused link.
 
 **Data Directory Permission Note:** The `data/` directory is mounted into the container for persistent storage (config, sessions, SSH keys, workspaces). Before running, ensure the directory exists and has proper permissions:
 

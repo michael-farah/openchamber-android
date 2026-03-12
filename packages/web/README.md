@@ -45,6 +45,13 @@ openchamber stop                     # Stop server
 openchamber update                   # Update to latest version
 ```
 
+### Tunnel behavior notes
+
+- One active tunnel per running OpenChamber instance (port).
+- Starting a different tunnel mode/provider on the same instance replaces the active tunnel.
+- Replacing or stopping a tunnel revokes existing connect links and invalidates remote tunnel sessions.
+- Connect links are one-time tokens; generating a new link revokes the previous unused link.
+
 ### Environment Variables
 
 - `OPENCODE_HOST` - Full base URL of external OpenCode server, e.g. `http://hostname:4096` or `https://hostname:4096` (overrides `OPENCODE_PORT`)
