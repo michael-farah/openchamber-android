@@ -497,19 +497,22 @@ export const StaticToolRow: React.FC<{
                             event.stopPropagation();
                             handleReadFileClick(entry.path, entry.offset);
                         }}
-                        className="inline-flex items-center gap-1 min-w-0 flex-1 typography-meta leading-5 hover:opacity-90"
+                        className="inline-flex items-center justify-start gap-1 min-w-0 flex-1 text-left typography-meta leading-5 hover:opacity-90"
                         style={{ color: 'var(--tools-description)' }}
                         title={entry.offset ? `${entry.displayPath}:${entry.offset}` : entry.displayPath}
                     >
                         {showToolFileIcons ? <FileTypeIcon filePath={entry.path} className="h-3.5 w-3.5" /> : null}
-                        <Text
-                            variant={animateTailText ? 'generate-effect' : undefined}
+                        <span
                             className="min-w-0 flex-1 truncate whitespace-nowrap typography-meta leading-5"
-                            style={{ color: 'var(--tools-description)', direction: 'rtl', textAlign: 'left' }}
+                            style={{
+                                color: 'var(--tools-description)',
+                                direction: 'rtl',
+                                textAlign: 'left',
+                            }}
                             title={entry.displayPath}
                         >
                             {entry.displayPath}
-                        </Text>
+                        </span>
                     </button>
                 ))
                 : null}

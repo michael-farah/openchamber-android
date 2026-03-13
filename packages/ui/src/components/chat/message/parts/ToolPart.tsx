@@ -978,21 +978,19 @@ const renderPathLikeGitChanges = (path: string, grow = true) => {
     );
 };
 
-const renderAnimatedPathWithIcon = (path: string, animate = true, grow = true, showFileIcons = true) => {
+const renderAnimatedPathWithIcon = (path: string, _animate = true, grow = true, showFileIcons = true) => {
     const lastSlash = path.lastIndexOf('/');
 
     if (lastSlash === -1) {
         return (
-            <span className={cn('min-w-0 inline-flex items-center gap-1', grow && 'flex-1')} title={path}>
+            <span className={cn('min-w-0 inline-flex items-center gap-1 overflow-hidden', grow && 'flex-1')} title={path}>
                 {showFileIcons ? <FileTypeIcon filePath={path} className="h-3.5 w-3.5 flex-shrink-0" /> : null}
-                <Text
-                    key={animate ? `path-full-${path}` : undefined}
-                    variant={animate ? 'generate-effect' : undefined}
-                    className="min-w-0 truncate typography-meta"
+                <span
+                    className={cn('min-w-0 truncate whitespace-nowrap typography-meta', grow && 'flex-1')}
                     style={{ color: 'var(--tools-title)' }}
                 >
                     {path}
-                </Text>
+                </span>
             </span>
         );
     }
@@ -1004,26 +1002,19 @@ const renderAnimatedPathWithIcon = (path: string, animate = true, grow = true, s
         <span className={cn('min-w-0 inline-flex items-center gap-1 overflow-hidden', grow && 'flex-1')} title={path}>
             {showFileIcons ? <FileTypeIcon filePath={path} className="h-3.5 w-3.5 flex-shrink-0" /> : null}
             <span className={cn('min-w-0 inline-flex items-baseline overflow-hidden typography-meta', grow && 'flex-1')}>
-                <Text
-                    key={animate ? `path-dir-${dir}` : undefined}
-                    variant={animate ? 'generate-effect' : undefined}
-                    className="min-w-0 truncate typography-meta"
-                    style={{ color: 'var(--tools-description)', direction: 'rtl', textAlign: 'left' }}
+                <span
+                    className="min-w-0 flex-1 truncate whitespace-nowrap"
+                    style={{
+                        color: 'var(--tools-description)',
+                        direction: 'rtl',
+                        textAlign: 'left',
+                    }}
                 >
                     {dir}
-                </Text>
-                <span className="flex-shrink-0 inline-flex items-baseline">
-                    <Text variant={animate ? 'generate-effect' : undefined} className="typography-meta" style={{ color: 'var(--tools-description)' }}>
-                        /
-                    </Text>
-                    <Text
-                        key={animate ? `path-name-${name}` : undefined}
-                        variant={animate ? 'generate-effect' : undefined}
-                        className="typography-meta"
-                        style={{ color: 'var(--tools-title)' }}
-                    >
-                        {name}
-                    </Text>
+                </span>
+                <span className="flex-shrink-0" style={{ color: 'var(--tools-description)' }}>/</span>
+                <span className="flex-shrink-0" style={{ color: 'var(--tools-title)' }}>
+                    {name}
                 </span>
             </span>
         </span>
