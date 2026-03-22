@@ -125,6 +125,7 @@ const applyDefaultAgentAndModelSelection = (sessionId: string, configState = use
 
 const initializeSessionForWorktree = (sessionId: string, metadata: {
   path: string;
+  projectDirectory: string;
   branch: string;
   label: string;
   name?: string;
