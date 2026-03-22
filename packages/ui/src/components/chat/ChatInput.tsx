@@ -86,8 +86,6 @@ const normalizePath = (value?: string | null): string | null => {
     return normalized.length > 1 ? normalized.replace(/\/+$/, '') : normalized;
 };
 
-const NEW_WORKTREE_SENTINEL = '__new_worktree__';
-
 const getProjectDisplayLabel = (project: { label?: string; path: string }): string => {
     const label = project.label?.trim();
     if (label) {
@@ -2473,10 +2471,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
     }, [activeProjectId, projects, setActiveProjectIdOnly, setNewSessionDraftTarget]);
 
     const handleDraftDirectoryChange = React.useCallback((directory: string) => {
-        if (directory === NEW_WORKTREE_SENTINEL) {
-            void createWorktreeDraft();
-            return;
-        }
         const draft = useSessionStore.getState().newSessionDraft;
         if (draft?.pendingWorktreeRequestId || draft?.bootstrapPendingDirectory || draft?.preserveDirectoryOverride) {
             return;
@@ -3031,10 +3025,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
                                     ) : null}
                                     {projectRootBranchOption ? <SelectSeparator /> : null}
                                     <SelectGroup>
-                                        <SelectLabel>Worktrees</SelectLabel>
-                                        <SelectItem value={NEW_WORKTREE_SENTINEL} className="max-w-[24rem] truncate text-muted-foreground">
-                                            + New worktree…
-                                        </SelectItem>
+                                        <div className="flex items-center justify-between px-2 py-1.5">
+                                            <span className="text-muted-foreground typography-meta">Worktrees</span>
+                                            <button
+                                                type="button"
+                                                className="text-muted-foreground typography-meta hover:text-foreground cursor-pointer"
+                                                onPointerDown={(e) => { e.stopPropagation(); }}
+                                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); void createWorktreeDraft(); }}
+                                            >
+                                                + New
+                                            </button>
+                                        </div>
                                         {worktreeBranchOptions.map((option) => (
                                             <SelectItem key={option.value} value={option.value} className="max-w-[24rem] truncate">
                                                 {option.label}
