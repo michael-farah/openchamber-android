@@ -12011,6 +12011,10 @@ async function main(options = {}) {
       const status = await getStatus(directory);
       res.json(status);
     } catch (error) {
+      const errorText = typeof error?.message === 'string' ? error.message : '';
+      if (/not a git repository/i.test(errorText)) {
+        return res.json({ isGitRepository: false, files: [], branch: null, ahead: 0, behind: 0 });
+      }
       console.error('Failed to get git status:', error);
       res.status(500).json({ error: error.message || 'Failed to get git status' });
     }
