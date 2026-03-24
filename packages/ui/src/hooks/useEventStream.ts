@@ -11,7 +11,7 @@ import type { Part, Session, Message } from '@opencode-ai/sdk/v2';
 import type { PermissionRequest } from '@/types/permission';
 import type { QuestionRequest } from '@/types/question';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { streamDebugEnabled } from '@/stores/utils/streamDebug';
+import { streamDebugEnabled, streamPerfCount, streamPerfMeasure, streamPerfObserve } from '@/stores/utils/streamDebug';
 import { handleTodoUpdatedEvent } from '@/stores/useTodoStore';
 import { useMcpStore } from '@/stores/useMcpStore';
 import { useContextStore } from '@/stores/contextStore';
@@ -1002,45 +1002,48 @@ export const useEventStream = (options?: { enabled?: boolean }) => {
 
   const handleEvent = React.useCallback((event: EventData) => {
     lastEventTimestampRef.current = Date.now();
+    streamPerfCount('ui.event_stream.event');
+    streamPerfCount(`ui.event_stream.type.${event.type}`);
 
-    if (streamDebugEnabled()) {
-      console.debug('[useEventStream] Received event:', event.type, event.properties);
-    }
+    streamPerfMeasure(`ui.event_stream.handle.${event.type}`, () => {
+      if (streamDebugEnabled()) {
+        console.debug('[useEventStream] Received event:', event.type, event.properties);
+      }
 
-    if (!event.properties) return;
+      if (!event.properties) return;
 
-    const props = event.properties as Record<string, unknown>;
-    const nonMetadataSessionEvents = new Set(['session.abort', 'session.error']);
+      const props = event.properties as Record<string, unknown>;
+      const nonMetadataSessionEvents = new Set(['session.abort', 'session.error']);
 
-    if (!nonMetadataSessionEvents.has(event.type)) {
-      const sessionPayload = (typeof props.session === 'object' && props.session !== null ? props.session : null) ||
-                           (typeof props.sessionInfo === 'object' && props.sessionInfo !== null ? props.sessionInfo : null) as Record<string, unknown> | null;
+      if (!nonMetadataSessionEvents.has(event.type)) {
+        const sessionPayload = (typeof props.session === 'object' && props.session !== null ? props.session : null) ||
+                             (typeof props.sessionInfo === 'object' && props.sessionInfo !== null ? props.sessionInfo : null) as Record<string, unknown> | null;
 
-      if (sessionPayload) {
-        const sessionPayloadAny = sessionPayload as Record<string, unknown>;
-        const sessionId = (typeof sessionPayloadAny.id === 'string' && sessionPayloadAny.id.length > 0) ? sessionPayloadAny.id :
-                         (typeof sessionPayloadAny.sessionID === 'string' && sessionPayloadAny.sessionID.length > 0) ? sessionPayloadAny.sessionID :
-                         (typeof props.sessionID === 'string' && props.sessionID.length > 0) ? props.sessionID :
-                         (typeof props.id === 'string' && props.id.length > 0) ? props.id : undefined;
+        if (sessionPayload) {
+          const sessionPayloadAny = sessionPayload as Record<string, unknown>;
+          const sessionId = (typeof sessionPayloadAny.id === 'string' && sessionPayloadAny.id.length > 0) ? sessionPayloadAny.id :
+                           (typeof sessionPayloadAny.sessionID === 'string' && sessionPayloadAny.sessionID.length > 0) ? sessionPayloadAny.sessionID :
+                           (typeof props.sessionID === 'string' && props.sessionID.length > 0) ? props.sessionID :
+                           (typeof props.id === 'string' && props.id.length > 0) ? props.id : undefined;
 
-        if (sessionId) {
-          const titleCandidate = typeof sessionPayloadAny.title === 'string' ? sessionPayloadAny.title :
-                                typeof props.title === 'string' ? props.title : undefined;
+          if (sessionId) {
+            const titleCandidate = typeof sessionPayloadAny.title === 'string' ? sessionPayloadAny.title :
+                                  typeof props.title === 'string' ? props.title : undefined;
 
-          const summaryCandidate = (typeof sessionPayloadAny.summary === 'object' && sessionPayloadAny.summary !== null) ? sessionPayloadAny.summary as Session['summary'] :
-                                  (typeof props.summary === 'object' && props.summary !== null) ? props.summary as Session['summary'] : undefined;
+            const summaryCandidate = (typeof sessionPayloadAny.summary === 'object' && sessionPayloadAny.summary !== null) ? sessionPayloadAny.summary as Session['summary'] :
+                                    (typeof props.summary === 'object' && props.summary !== null) ? props.summary as Session['summary'] : undefined;
 
-          if (titleCandidate !== undefined || summaryCandidate !== undefined) {
-            const patch: Partial<Session> = {};
-            if (titleCandidate !== undefined) patch.title = titleCandidate;
-            if (summaryCandidate !== undefined) patch.summary = summaryCandidate;
-            applySessionMetadata(sessionId, patch);
+            if (titleCandidate !== undefined || summaryCandidate !== undefined) {
+              const patch: Partial<Session> = {};
+              if (titleCandidate !== undefined) patch.title = titleCandidate;
+              if (summaryCandidate !== undefined) patch.summary = summaryCandidate;
+              applySessionMetadata(sessionId, patch);
+            }
           }
         }
       }
-    }
 
-    switch (event.type) {
+      switch (event.type) {
       case 'server.connected':
         checkConnection();
         break;
@@ -1362,7 +1365,10 @@ export const useEventStream = (options?: { enabled?: boolean }) => {
         }
 
         trackMessage(messageId, 'addStreamingPart_called');
-        addStreamingPart(sessionId, messageId, messagePart, roleInfo);
+        streamPerfCount('ui.event_stream.message_part_updated');
+        streamPerfMeasure('ui.event_stream.add_streaming_part_ms', () => {
+          addStreamingPart(sessionId, messageId, messagePart, roleInfo);
+        });
         break;
       }
 
@@ -1444,7 +1450,11 @@ export const useEventStream = (options?: { enabled?: boolean }) => {
         }
 
         trackMessage(messageId, 'part_delta_received', { role: roleInfo, field });
-        applyPartDelta(sessionId, messageId, partId, field, delta, roleInfo);
+        streamPerfCount('ui.event_stream.message_part_delta');
+        streamPerfObserve('ui.event_stream.message_part_delta_chars', delta.length);
+        streamPerfMeasure('ui.event_stream.apply_part_delta_ms', () => {
+          applyPartDelta(sessionId, messageId, partId, field, delta, roleInfo);
+        });
         break;
       }
 
@@ -2141,7 +2151,8 @@ export const useEventStream = (options?: { enabled?: boolean }) => {
         }
         break;
       }
-    }
+      }
+    });
   }, [
     currentSessionId,
     addStreamingPart,

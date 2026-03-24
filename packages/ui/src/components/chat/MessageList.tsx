@@ -27,6 +27,7 @@ import { hasPendingUserSendAnimation, consumePendingUserSendAnimation } from '@/
 import { useAssistantStatus } from '@/hooks/useAssistantStatus';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { StatusRow } from './StatusRow';
+import { streamPerfCount, streamPerfMeasure } from '@/stores/utils/streamDebug';
 
 const MESSAGE_VIRTUALIZE_THRESHOLD = 40;
 const MESSAGE_VIRTUAL_OVERSCAN_MOBILE = 2;
@@ -826,6 +827,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     scrollToBottom,
     scrollRef,
 }, ref) => {
+    streamPerfCount('ui.message_list.render');
     const { isMobile } = useDeviceInfo();
     const { isWorking: sessionIsWorking } = useCurrentSessionActivity();
     const { working } = useAssistantStatus();
@@ -874,7 +876,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     }, [defaultActivityExpanded]);
 
 
-    const baseDisplayMessages = React.useMemo(() => {
+    const baseDisplayMessages = React.useMemo(() => streamPerfMeasure('ui.message_list.base_display_ms', () => {
         const cached = baseDisplayCacheRef.current;
         const lastMessage = messages.length > 0 ? messages[messages.length - 1] : undefined;
         const canUseTailFastPath = Boolean(lastMessage && isAssistantTextOnlyMessage(lastMessage));
@@ -972,7 +974,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
         };
 
         return output;
-    }, [messages]);
+    }), [messages]);
 
     const activeRetryStatus = useSessionStore(
         useShallow((state) => {
@@ -1019,26 +1021,26 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
         }
     }, [activeRetryStatus, activeRetryStatus?.sessionId, activeRetryStatus?.confirmedAt]);
 
-    const displayMessages = React.useMemo(() => {
+    const displayMessages = React.useMemo(() => streamPerfMeasure('ui.message_list.retry_overlay_ms', () => {
         return applyRetryOverlay(baseDisplayMessages, {
             sessionId: activeRetrySessionId,
             message: activeRetryMessage,
             confirmedAt: activeRetryConfirmedAt,
             fallbackTimestamp: fallbackRetryTimestamp,
         });
-    }, [activeRetryMessage, activeRetryConfirmedAt, activeRetrySessionId, baseDisplayMessages, fallbackRetryTimestamp]);
+    }), [activeRetryMessage, activeRetryConfirmedAt, activeRetrySessionId, baseDisplayMessages, fallbackRetryTimestamp]);
 
     const { projection, staticTurns, streamingTurn } = useTurnRecords(displayMessages, {
         showTextJustificationActivity: chatRenderMode === 'sorted',
     });
-    const turns = React.useMemo(() => {
+    const turns = React.useMemo(() => streamPerfMeasure('ui.message_list.turns_ms', () => {
         if (!streamingTurn) {
             return staticTurns;
         }
         return [...staticTurns, streamingTurn];
-    }, [staticTurns, streamingTurn]);
+    }), [staticTurns, streamingTurn]);
 
-    const renderEntries = React.useMemo<RenderEntry[]>(() => {
+    const renderEntries = React.useMemo<RenderEntry[]>(() => streamPerfMeasure('ui.message_list.render_entries_ms', () => {
         const turnEntries = turns.map((turn) => ({
             kind: 'turn' as const,
             key: `turn:${turn.turnId}`,
@@ -1077,7 +1079,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
         });
 
         return orderedEntries;
-    }, [displayMessages, projection.lastTurnId, projection.ungroupedMessageIds, turns]);
+    }), [displayMessages, projection.lastTurnId, projection.ungroupedMessageIds, turns]);
 
     const staging = useStageTurns({
         sessionKey,

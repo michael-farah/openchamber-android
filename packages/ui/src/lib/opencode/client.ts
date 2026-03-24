@@ -16,6 +16,7 @@ import type {
 import type { PermissionRequest } from "@/types/permission";
 import type { QuestionRequest } from "@/types/question";
 import { waitForWorktreeBootstrap } from "@/lib/worktrees/worktreeBootstrap";
+import { streamPerfCount, streamPerfMeasure, streamPerfObserve } from "@/stores/utils/streamDebug";
 type StreamEvent<TData> = {
   data: TData;
   event?: string;
@@ -1436,6 +1437,7 @@ class OpencodeService {
   }
 
   private flushGlobalSseQueue = () => {
+    streamPerfCount('ui.client.global_sse.flush');
     if (this.globalSseFlushTimer) {
       clearTimeout(this.globalSseFlushTimer);
       this.globalSseFlushTimer = null;
@@ -1445,33 +1447,38 @@ class OpencodeService {
       return;
     }
 
-    const events = this.globalSseQueue;
-    const skip = this.globalSseStaleDeltas.size > 0 ? new Set(this.globalSseStaleDeltas) : undefined;
-    this.globalSseQueue = this.globalSseBuffer;
-    this.globalSseBuffer = events;
-    this.globalSseQueue.length = 0;
-    this.globalSseCoalesced.clear();
-    this.globalSseStaleDeltas.clear();
-    this.globalSseLastFlushAt = Date.now();
+    streamPerfObserve('ui.client.global_sse.flush_queue_size', this.globalSseQueue.length);
 
-    for (const event of events) {
-      if (!event) continue;
-      if (skip) {
-        const deltaKey = this.getGlobalSseDeltaKey(event);
-        if (deltaKey && skip.has(deltaKey)) {
-          continue;
+    streamPerfMeasure('ui.client.global_sse.flush_ms', () => {
+      const events = this.globalSseQueue;
+      const skip = this.globalSseStaleDeltas.size > 0 ? new Set(this.globalSseStaleDeltas) : undefined;
+      this.globalSseQueue = this.globalSseBuffer;
+      this.globalSseBuffer = events;
+      this.globalSseQueue.length = 0;
+      this.globalSseCoalesced.clear();
+      this.globalSseStaleDeltas.clear();
+      this.globalSseLastFlushAt = Date.now();
+
+      for (const event of events) {
+        if (!event) continue;
+        if (skip) {
+          const deltaKey = this.getGlobalSseDeltaKey(event);
+          if (deltaKey && skip.has(deltaKey)) {
+            continue;
+          }
+        }
+        streamPerfCount('ui.client.global_sse.flush_event');
+        for (const listener of this.globalSseListeners) {
+          try {
+            listener(event);
+          } catch (error) {
+            console.warn('[OpencodeClient] Global SSE listener error:', error);
+          }
         }
       }
-      for (const listener of this.globalSseListeners) {
-        try {
-          listener(event);
-        } catch (error) {
-          console.warn('[OpencodeClient] Global SSE listener error:', error);
-        }
-      }
-    }
 
-    this.globalSseBuffer.length = 0;
+      this.globalSseBuffer.length = 0;
+    });
   };
 
   private scheduleGlobalSseFlush() {
@@ -1484,6 +1491,7 @@ class OpencodeService {
   }
 
   private enqueueGlobalSseEvent(event: RoutedOpencodeEvent) {
+    streamPerfCount('ui.client.global_sse.enqueue');
     const key = this.getGlobalSseCoalesceKey(event);
     if (key) {
       const existingIndex = this.globalSseCoalesced.get(key);
@@ -1498,6 +1506,7 @@ class OpencodeService {
     }
 
     this.globalSseQueue.push(event);
+    streamPerfObserve('ui.client.global_sse.queue_size', this.globalSseQueue.length);
     this.scheduleGlobalSseFlush();
   }
 
@@ -1543,6 +1552,7 @@ class OpencodeService {
             continue;
           }
 
+          streamPerfCount(`ui.client.global_sse.type.${routed.payload.type}`);
           this.emitGlobalSseEvent(routed);
           if (Date.now() - yielded >= STREAM_YIELD_MS) {
             yielded = Date.now();

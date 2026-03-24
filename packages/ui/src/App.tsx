@@ -6,6 +6,7 @@ import { ChatView } from '@/components/views';
 import { FireworksProvider } from '@/contexts/FireworksContext';
 import { Toaster } from '@/components/ui/sonner';
 import { MemoryDebugPanel } from '@/components/ui/MemoryDebugPanel';
+import { setStreamPerfEnabled } from '@/stores/utils/streamDebug';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { useEventStream } from '@/hooks/useEventStream';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
@@ -117,6 +118,13 @@ function App({ apis }: AppProps) {
   const appReadyDispatchedRef = React.useRef(false);
   const embeddedSessionChat = React.useMemo<EmbeddedSessionChatConfig | null>(() => readEmbeddedSessionChatConfig(), []);
   const embeddedBackgroundWorkEnabled = !embeddedSessionChat || isEmbeddedVisible;
+
+  React.useEffect(() => {
+    setStreamPerfEnabled(showMemoryDebug);
+    return () => {
+      setStreamPerfEnabled(false);
+    };
+  }, [showMemoryDebug]);
 
   React.useEffect(() => {
     setIsVSCodeRuntime(apis.runtime.isVSCode);

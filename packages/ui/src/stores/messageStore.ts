@@ -16,6 +16,7 @@ import {
 import { extractTextFromPart, normalizeStreamingPart } from "./utils/messageUtils";
 import { filterMessagesByRevertPoint, normalizeMessageInfoForProjection } from "./utils/messageProjectors";
 import { getSafeStorage } from "./utils/safeStorage";
+import { streamDebugEnabled, streamPerfCount, streamPerfMeasure, streamPerfObserve } from "./utils/streamDebug";
 import { useFileStore } from "./fileStore";
 import { useSessionStore } from "./sessionStore";
 import { useContextStore } from "./contextStore";
@@ -112,6 +113,7 @@ const flushQueuedNonTextStreamingParts = (
     immediateHandler: StreamingPartImmediateHandler,
     filter?: (entry: QueuedStreamingPart) => boolean,
 ) => {
+    streamPerfCount('ui.message_store.non_text_flush');
     if (queuedNonTextStreamingPartOrder.length === 0) {
         clearNonTextStreamingFlushSchedule();
         return;
@@ -143,6 +145,7 @@ const flushQueuedNonTextStreamingParts = (
         return;
     }
 
+    streamPerfObserve('ui.message_store.non_text_flush_batch_size', batch.length);
     for (const entry of batch) {
         immediateHandler(entry.sessionId, entry.messageId, entry.part, entry.role, entry.currentSessionId);
     }
@@ -251,6 +254,7 @@ const flushQueuedPartDeltas = (
     ) => void,
     filter?: (entry: QueuedPartDelta) => boolean,
 ) => {
+    streamPerfCount('ui.message_store.part_delta_flush');
     if (queuedPartDeltaOrder.length === 0) {
         clearPartDeltaFlushSchedule();
         return;
@@ -282,17 +286,20 @@ const flushQueuedPartDeltas = (
         return;
     }
 
-    for (const entry of batch) {
-        immediateHandler(
-            entry.sessionId,
-            entry.messageId,
-            entry.partId,
-            entry.field,
-            entry.delta,
-            entry.role,
-            entry.currentSessionId,
-        );
-    }
+    streamPerfObserve('ui.message_store.part_delta_flush_batch_size', batch.length);
+    streamPerfMeasure('ui.message_store.part_delta_flush_ms', () => {
+        for (const entry of batch) {
+            immediateHandler(
+                entry.sessionId,
+                entry.messageId,
+                entry.partId,
+                entry.field,
+                entry.delta,
+                entry.role,
+                entry.currentSessionId,
+            );
+        }
+    });
 
     if (queuedPartDeltaOrder.length === 0) {
         clearPartDeltaFlushSchedule();
@@ -465,15 +472,6 @@ const compareMessageEntriesChronologically = (
     const aCreated = typeof a?.info?.time?.created === "number" ? a.info.time.created : 0;
     const bCreated = typeof b?.info?.time?.created === "number" ? b.info.time.created : 0;
     return aCreated - bCreated;
-};
-
-const streamDebugEnabled = (): boolean => {
-    if (typeof window === "undefined") return false;
-    try {
-        return window.localStorage.getItem("openchamber_stream_debug") === "1";
-    } catch {
-        return false;
-    }
 };
 
 const toFileUrl = (inputPath: string): string => {
@@ -1985,6 +1983,7 @@ export const useMessageStore = create<MessageStore>()(
                         role,
                         currentSessionId,
                     });
+                    streamPerfObserve('ui.message_store.non_text_queue_size', queuedNonTextStreamingPartOrder.length);
 
                     const flushQueuedParts = () => {
                         flushQueuedNonTextStreamingParts(get()._addStreamingPartImmediate);
@@ -1999,7 +1998,9 @@ export const useMessageStore = create<MessageStore>()(
                 },
 
                 _applyPartDeltaImmediate: (sessionId: string, messageId: string, partId: string, field: string, delta: string, role?: string, currentSessionId?: string) => {
-                    set((state) => {
+                    streamPerfCount('ui.message_store.apply_part_delta_immediate');
+                    streamPerfObserve('ui.message_store.apply_part_delta_chars', delta.length);
+                    streamPerfMeasure('ui.message_store.apply_part_delta_immediate_ms', () => set((state) => {
                         const sessionMessages = state.messages.get(sessionId) || [];
                         const messageIndex = resolveSessionMessagePosition(sessionId, messageId, sessionMessages);
                         if (messageIndex === -1) {
@@ -2091,10 +2092,11 @@ export const useMessageStore = create<MessageStore>()(
                         }
 
                         return updates;
-                    });
+                    }));
                 },
 
                 applyPartDelta: (sessionId: string, messageId: string, partId: string, field: string, delta: string, role?: string, currentSessionId?: string) => {
+                    streamPerfCount('ui.message_store.apply_part_delta');
                     if (!ENABLE_STREAMING_FRAME_BATCHING) {
                         get()._applyPartDeltaImmediate(sessionId, messageId, partId, field, delta, role, currentSessionId);
                         return;
@@ -2114,6 +2116,7 @@ export const useMessageStore = create<MessageStore>()(
                         role,
                         currentSessionId,
                     });
+                    streamPerfObserve('ui.message_store.part_delta_queue_size', queuedPartDeltaOrder.length);
 
                     const flushQueuedDeltas = () => {
                         flushQueuedPartDeltas(get()._applyPartDeltaImmediate);

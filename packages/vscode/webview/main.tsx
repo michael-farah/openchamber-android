@@ -1,5 +1,6 @@
 import { createVSCodeAPIs } from './api';
 import { onCommand, onThemeChange, proxyApiRequest, proxySessionMessageRequest, sendBridgeMessage, startSseProxy, stopSseProxy } from './api/bridge';
+import { vscodeStreamPerfCount, vscodeStreamPerfMeasure, vscodeStreamPerfObserve } from './api/streamPerf';
 import type { RuntimeAPIs } from '@openchamber/ui/lib/api/types';
 import {
   buildVSCodeThemeFromPalette,
@@ -877,7 +878,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = { ...headersFromRequest, ...headersFromInit };
 
     if (isSseApiPath(targetUrl.pathname)) {
-      const start = await startSseProxy({ path: suffixPath, headers });
+      const start = await vscodeStreamPerfMeasure('vscode.webview.sse_start_ms', () => startSseProxy({ path: suffixPath, headers }));
       if (!start.streamId) {
         return new Response(null, { status: start.status || 503, headers: start.headers || {} });
       }
@@ -894,11 +895,14 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
             if (!msg || msg.streamId !== streamId) return;
 
             if (msg.type === 'api:sse:chunk' && typeof msg.chunk === 'string') {
+              vscodeStreamPerfCount('vscode.webview.sse_chunk');
+              vscodeStreamPerfObserve('vscode.webview.sse_chunk_bytes', msg.chunk.length);
               controller.enqueue(encoder.encode(msg.chunk));
               return;
             }
 
             if (msg.type === 'api:sse:end') {
+              vscodeStreamPerfCount('vscode.webview.sse_end');
               unsubscribe?.();
               unsubscribe = null;
               if (typeof msg.error === 'string' && msg.error.length > 0) {

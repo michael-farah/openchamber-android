@@ -5,6 +5,7 @@ import type { StreamPhase } from '../types';
 import type { ContentChangeReason } from '@/hooks/useChatScrollManager';
 import { useStreamingTextThrottle } from '../../hooks/useStreamingTextThrottle';
 import { resolveAssistantDisplayText, shouldRenderAssistantText } from './assistantTextVisibility';
+import { streamPerfCount, streamPerfObserve } from '@/stores/utils/streamDebug';
 
 type PartWithText = Part & { text?: string; content?: string; value?: string; time?: { start?: number; end?: number } };
 
@@ -33,6 +34,11 @@ const AssistantTextPart: React.FC<AssistantTextPartProps> = ({
     const isCooldownPhase = streamPhase === 'cooldown';
     const isStreaming = chatRenderMode === 'live' && (isStreamingPhase || isCooldownPhase);
 
+    streamPerfCount('ui.assistant_text_part.render');
+    if (isStreaming) {
+        streamPerfCount('ui.assistant_text_part.render.streaming');
+    }
+
     const throttledTextContent = useStreamingTextThrottle({
         text: textContent,
         isStreaming,
@@ -44,6 +50,8 @@ const AssistantTextPart: React.FC<AssistantTextPartProps> = ({
         throttledTextContent,
         isStreaming,
     });
+
+    streamPerfObserve('ui.assistant_text_part.display_len', displayTextContent.length);
 
     const lastDisplayLengthRef = React.useRef(0);
     React.useEffect(() => {

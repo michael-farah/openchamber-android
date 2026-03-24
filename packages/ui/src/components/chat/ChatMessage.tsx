@@ -26,6 +26,7 @@ import { isLikelyProviderAuthFailure, PROVIDER_AUTH_FAILURE_MESSAGE } from '@/li
 import type { TurnGroupingContext } from './lib/turns/types';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { FadeInOnReveal } from './message/FadeInOnReveal';
+import { streamPerfCount } from '@/stores/utils/streamDebug';
 
 const ToolOutputDialog = React.lazy(() => import('./message/ToolOutputDialog'));
 
@@ -169,6 +170,11 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         revertToMessage,
         forkFromMessage,
     } = sessionState;
+
+    streamPerfCount('ui.chat_message.render');
+    if (isStreamingMessage) {
+        streamPerfCount('ui.chat_message.render.streaming');
+    }
 
     const providers = useConfigStore((state) => state.providers);
     const { showReasoningTraces, stickyUserHeader, chatRenderMode, showExpandedBashTools, showExpandedEditTools } = useUIStore(
