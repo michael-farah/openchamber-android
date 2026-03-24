@@ -563,6 +563,38 @@ const shouldBatchStreamingPart = (part: Part | undefined): boolean => {
     return shouldCadenceBatchPartType(part.type);
 };
 
+const shouldBypassStreamingPartBatchForBootstrap = (
+    state: MessageState,
+    sessionId: string,
+    messageId: string,
+    part: Part,
+): boolean => {
+    if (!part || (part.type !== 'text' && part.type !== 'reasoning')) {
+        return false;
+    }
+
+    const incomingText = extractTextFromPart(part);
+    if (incomingText.length === 0) {
+        return false;
+    }
+
+    const sessionMessages = state.messages.get(sessionId) ?? [];
+    const messageIndex = resolveSessionMessagePosition(sessionId, messageId, sessionMessages);
+    if (messageIndex !== -1) {
+        const existingMessage = sessionMessages[messageIndex];
+        const existingPartIndex = findMatchingPartIndex(existingMessage.parts, part);
+        return existingPartIndex === -1;
+    }
+
+    const pendingEntry = state.pendingAssistantParts.get(messageId);
+    if (!pendingEntry) {
+        return true;
+    }
+
+    const pendingIndex = findMatchingPartIndex(pendingEntry.parts, part);
+    return pendingIndex === -1;
+};
+
 const shouldBatchPartDelta = (
     messagesBySession: Map<string, StoredMessage[]>,
     sessionId: string,
@@ -2206,6 +2238,11 @@ export const useMessageStore = create<MessageStore>()(
 
                 addStreamingPart: (sessionId: string, messageId: string, part: Part, role?: string, currentSessionId?: string) => {
                     if (!ENABLE_STREAMING_FRAME_BATCHING) {
+                        get()._addStreamingPartImmediate(sessionId, messageId, part, role, currentSessionId);
+                        return;
+                    }
+
+                    if (shouldBypassStreamingPartBatchForBootstrap(get(), sessionId, messageId, part)) {
                         get()._addStreamingPartImmediate(sessionId, messageId, part, role, currentSessionId);
                         return;
                     }
