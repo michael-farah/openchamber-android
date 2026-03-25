@@ -35,6 +35,7 @@ import { registerGitRoutes } from './lib/git/routes.js';
 import { createTerminalRuntime } from './lib/terminal/runtime.js';
 import { registerFsRoutes } from './lib/fs/routes.js';
 import { createFsSearchRuntime } from './lib/fs/search.js';
+import { registerOpenCodeRoutes } from './lib/opencode/routes.js';
 import webPush from 'web-push';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -8146,63 +8147,46 @@ async function main(options = {}) {
 
   // ── End Tunnel API ────────────────────────────────────────────────
 
-  app.get('/api/config/settings', async (_req, res) => {
-    try {
-      const settings = await readSettingsFromDiskMigrated();
-      res.json(formatSettingsResponse(settings));
-    } catch (error) {
-      console.error('Failed to load settings:', error);
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to load settings' });
-    }
-  });
+  const getOpenCodeResolutionSnapshot = async (settings) => {
+    const configured = typeof settings?.opencodeBinary === 'string' ? settings.opencodeBinary : null;
 
-  app.get('/api/config/opencode-resolution', async (_req, res) => {
-    try {
-      const settings = await readSettingsFromDiskMigrated();
-      const configured = typeof settings?.opencodeBinary === 'string' ? settings.opencodeBinary : null;
+    const previousSource = resolvedOpencodeBinarySource;
+    const detectedNow = resolveOpencodeCliPath();
+    const rawDetectedSourceNow = resolvedOpencodeBinarySource;
+    resolvedOpencodeBinarySource = previousSource;
 
-      const previousSource = resolvedOpencodeBinarySource;
-      const detectedNow = resolveOpencodeCliPath();
-      const rawDetectedSourceNow = resolvedOpencodeBinarySource;
-      resolvedOpencodeBinarySource = previousSource;
+    await applyOpencodeBinaryFromSettings();
+    ensureOpencodeCliEnv();
 
-      // Best-effort: apply configured override (if any) and resolve.
-      await applyOpencodeBinaryFromSettings();
-      ensureOpencodeCliEnv();
+    const resolved = resolvedOpencodeBinary || null;
+    const source = resolvedOpencodeBinarySource || null;
+    const detectedSourceNow =
+      detectedNow &&
+      resolved &&
+      detectedNow === resolved &&
+      rawDetectedSourceNow === 'env' &&
+      source &&
+      source !== 'env'
+        ? source
+        : rawDetectedSourceNow;
+    const shim = resolved ? opencodeShimInterpreter(resolved) : null;
 
-      const resolved = resolvedOpencodeBinary || null;
-      const source = resolvedOpencodeBinarySource || null;
-      const detectedSourceNow =
-        detectedNow &&
-        resolved &&
-        detectedNow === resolved &&
-        rawDetectedSourceNow === 'env' &&
-        source &&
-        source !== 'env'
-          ? source
-          : rawDetectedSourceNow;
-      const shim = resolved ? opencodeShimInterpreter(resolved) : null;
-
-      res.json({
-        configured,
-        resolved,
-        resolvedDir: resolved ? path.dirname(resolved) : null,
-        source,
-        detectedNow,
-        detectedSourceNow,
-        shim,
-        viaWsl: useWslForOpencode,
-        wslBinary: resolvedWslBinary || null,
-        wslPath: resolvedWslOpencodePath || null,
-        wslDistro: resolvedWslDistro || null,
-        node: resolvedNodeBinary || null,
-        bun: resolvedBunBinary || null,
-      });
-    } catch (error) {
-      console.error('Failed to build opencode resolution snapshot:', error);
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to build snapshot' });
-    }
-  });
+    return {
+      configured,
+      resolved,
+      resolvedDir: resolved ? path.dirname(resolved) : null,
+      source,
+      detectedNow,
+      detectedSourceNow,
+      shim,
+      viaWsl: useWslForOpencode,
+      wslBinary: resolvedWslBinary || null,
+      wslPath: resolvedWslOpencodePath || null,
+      wslDistro: resolvedWslDistro || null,
+      node: resolvedNodeBinary || null,
+      bun: resolvedBunBinary || null,
+    };
+  };
 
   app.get('/api/config/themes', async (_req, res) => {
     try {
@@ -8214,17 +8198,20 @@ async function main(options = {}) {
     }
   });
 
-  app.put('/api/config/settings', async (req, res) => {
-    console.log(`[API:PUT /api/config/settings] Received request`);
-    try {
-      const updated = await persistSettings(req.body ?? {});
-      console.log(`[API:PUT /api/config/settings] Success, returning ${updated.projects?.length || 0} projects`);
-      res.json(updated);
-    } catch (error) {
-      console.error(`[API:PUT /api/config/settings] Failed to save settings:`, error);
-      console.error(`[API:PUT /api/config/settings] Error stack:`, error.stack);
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to save settings' });
-    }
+  registerOpenCodeRoutes(app, {
+    crypto,
+    clientReloadDelayMs: CLIENT_RELOAD_DELAY_MS,
+    getOpenCodeResolutionSnapshot,
+    formatSettingsResponse,
+    readSettingsFromDisk,
+    readSettingsFromDiskMigrated,
+    persistSettings,
+    sanitizeProjects,
+    validateDirectoryPath,
+    resolveProjectDirectory,
+    getProviderSources,
+    removeProviderConfig,
+    refreshOpenCodeAfterConfigChange,
   });
 
   app.get('/api/projects/:projectId/icon', async (req, res) => {
@@ -9551,14 +9538,6 @@ async function main(options = {}) {
     }
   });
 
-  let authLibrary = null;
-  const getAuthLibrary = async () => {
-    if (!authLibrary) {
-      authLibrary = await import('./lib/opencode/auth.js');
-    }
-    return authLibrary;
-  };
-
   let quotaProviders = null;
   const getQuotaProviders = async () => {
     if (!quotaProviders) {
@@ -9570,104 +9549,6 @@ async function main(options = {}) {
   registerQuotaRoutes(app, { getQuotaProviders });
 
   registerGitHubRoutes(app);
-
-  app.get('/api/provider/:providerId/source', async (req, res) => {
-    try {
-      const { providerId } = req.params;
-      if (!providerId) {
-        return res.status(400).json({ error: 'Provider ID is required' });
-      }
-
-      const headerDirectory = typeof req.get === 'function' ? req.get('x-opencode-directory') : null;
-      const queryDirectory = Array.isArray(req.query?.directory)
-        ? req.query.directory[0]
-        : req.query?.directory;
-      const requestedDirectory = headerDirectory || queryDirectory || null;
-
-      let directory = null;
-      const resolved = await resolveProjectDirectory(req);
-      if (resolved.directory) {
-        directory = resolved.directory;
-      } else if (requestedDirectory) {
-        return res.status(400).json({ error: resolved.error });
-      }
-
-      const sources = getProviderSources(providerId, directory);
-      const { getProviderAuth } = await getAuthLibrary();
-      const auth = getProviderAuth(providerId);
-      sources.sources.auth.exists = Boolean(auth);
-
-      res.json({
-        providerId,
-        sources: sources.sources,
-      });
-    } catch (error) {
-      console.error('Failed to get provider sources:', error);
-      res.status(500).json({ error: error.message || 'Failed to get provider sources' });
-    }
-  });
-
-  app.delete('/api/provider/:providerId/auth', async (req, res) => {
-    try {
-      const { providerId } = req.params;
-      if (!providerId) {
-        return res.status(400).json({ error: 'Provider ID is required' });
-      }
-
-      const scope = typeof req.query?.scope === 'string' ? req.query.scope : 'auth';
-      const headerDirectory = typeof req.get === 'function' ? req.get('x-opencode-directory') : null;
-      const queryDirectory = Array.isArray(req.query?.directory)
-        ? req.query.directory[0]
-        : req.query?.directory;
-      const requestedDirectory = headerDirectory || queryDirectory || null;
-      let directory = null;
-
-      if (scope === 'project' || requestedDirectory) {
-        const resolved = await resolveProjectDirectory(req);
-        if (!resolved.directory) {
-          return res.status(400).json({ error: resolved.error });
-        }
-        directory = resolved.directory;
-      } else {
-        const resolved = await resolveProjectDirectory(req);
-        if (resolved.directory) {
-          directory = resolved.directory;
-        }
-      }
-
-      let removed = false;
-      if (scope === 'auth') {
-        const { removeProviderAuth } = await getAuthLibrary();
-        removed = removeProviderAuth(providerId);
-      } else if (scope === 'user' || scope === 'project' || scope === 'custom') {
-        removed = removeProviderConfig(providerId, directory, scope);
-      } else if (scope === 'all') {
-        const { removeProviderAuth } = await getAuthLibrary();
-        const authRemoved = removeProviderAuth(providerId);
-        const userRemoved = removeProviderConfig(providerId, directory, 'user');
-        const projectRemoved = directory ? removeProviderConfig(providerId, directory, 'project') : false;
-        const customRemoved = removeProviderConfig(providerId, directory, 'custom');
-        removed = authRemoved || userRemoved || projectRemoved || customRemoved;
-      } else {
-        return res.status(400).json({ error: 'Invalid scope' });
-      }
-
-      if (removed) {
-        await refreshOpenCodeAfterConfigChange(`provider ${providerId} disconnected (${scope})`);
-      }
-
-      res.json({
-        success: true,
-        removed,
-        requiresReload: removed,
-        message: removed ? 'Provider disconnected successfully' : 'Provider was not connected',
-        reloadDelayMs: removed ? CLIENT_RELOAD_DELAY_MS : undefined,
-      });
-    } catch (error) {
-      console.error('Failed to disconnect provider:', error);
-      res.status(500).json({ error: error.message || 'Failed to disconnect provider' });
-    }
-  });
 
   registerGitRoutes(app);
   registerFsRoutes(app, {
@@ -9681,55 +9562,6 @@ async function main(options = {}) {
     buildAugmentedPath,
     resolveGitBinaryForSpawn,
     openchamberUserConfigRoot: OPENCHAMBER_USER_CONFIG_ROOT,
-  });
-
-  app.post('/api/opencode/directory', async (req, res) => {
-    try {
-      const requestedPath = typeof req.body?.path === 'string' ? req.body.path.trim() : '';
-      if (!requestedPath) {
-        return res.status(400).json({ error: 'Path is required' });
-      }
-
-      const validated = await validateDirectoryPath(requestedPath);
-      if (!validated.ok) {
-        return res.status(400).json({ error: validated.error });
-      }
-
-      const resolvedPath = validated.directory;
-      const currentSettings = await readSettingsFromDisk();
-      const existingProjects = sanitizeProjects(currentSettings.projects) || [];
-      const existing = existingProjects.find((project) => project.path === resolvedPath) || null;
-
-      const nextProjects = existing
-        ? existingProjects
-        : [
-            ...existingProjects,
-            {
-              id: crypto.randomUUID(),
-              path: resolvedPath,
-              addedAt: Date.now(),
-              lastOpenedAt: Date.now(),
-            },
-          ];
-
-      const activeProjectId = existing ? existing.id : nextProjects[nextProjects.length - 1].id;
-
-      const updated = await persistSettings({
-        projects: nextProjects,
-        activeProjectId,
-        lastDirectory: resolvedPath,
-      });
-
-      res.json({
-        success: true,
-        restarted: false,
-        path: resolvedPath,
-        settings: updated,
-      });
-    } catch (error) {
-      console.error('Failed to update OpenCode working directory:', error);
-      res.status(500).json({ error: error.message || 'Failed to update working directory' });
-    }
   });
 
   terminalRuntime = createTerminalRuntime({

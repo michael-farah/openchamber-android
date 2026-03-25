@@ -6,6 +6,7 @@ This module provides OpenCode server integration utilities for the web server ru
 ## Entrypoints and structure
 - `packages/web/server/lib/opencode/index.js`: public entrypoint (currently baseline placeholder).
 - `packages/web/server/lib/opencode/auth.js`: provider authentication file operations.
+- `packages/web/server/lib/opencode/routes.js`: OpenCode/provider settings and auth-related route registration.
 - `packages/web/server/lib/opencode/shared.js`: shared utilities for config, markdown, skills, and git helpers.
 - `packages/web/server/lib/opencode/ui-auth.js`: UI session authentication with rate limiting.
 
@@ -43,6 +44,17 @@ This module provides OpenCode server integration utilities for the web server ru
   - `ensureSessionToken(req, res)`: Returns or creates session token.
   - `dispose()`: Cleans up timers and state.
 
+## Public exports (routes.js)
+- `registerOpenCodeRoutes(app, dependencies)`: Registers OpenCode-owned HTTP routes and internal module runtime:
+  - `GET /api/config/settings`
+  - `PUT /api/config/settings`
+  - `GET /api/config/opencode-resolution`
+  - `POST /api/opencode/directory`
+  - `GET /api/provider/:providerId/source`
+  - `DELETE /api/provider/:providerId/auth`
+- Owns lazy auth library loading for provider auth checks/removal.
+- Keeps route behavior independent from composition root; `index.js` now supplies dependencies only.
+
 ## Storage and configuration
 - Provider auth: `~/.local/share/opencode/auth.json`.
 - User config: `~/.config/opencode/opencode.json`.
@@ -52,7 +64,7 @@ This module provides OpenCode server integration utilities for the web server ru
 
 ## Notes for contributors
 - This module serves as foundation for OpenCode-related server utilities.
-- Index.js is currently a baseline placeholder; direct imports use submodule paths.
+- Route ownership moved to module-level `routes.js`; `index.js` wires dependencies only.
 - All file writes include automatic backup before modification.
 - Config merging follows priority: custom > project > user.
 - UI auth uses scrypt for password hashing with constant-time comparison.
