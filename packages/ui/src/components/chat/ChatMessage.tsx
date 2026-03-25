@@ -149,24 +149,19 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
     const sessionState = useSessionStore(
         useShallow((state) => ({
-            lifecyclePhase: state.messageStreamStates.get(message.info.id)?.phase ?? null,
-            hasActiveStreamInSession: (() => {
-                const sessionId =
-                    (message.info as { sessionID?: string }).sessionID ??
-                    state.currentSessionId ??
-                    null;
-                if (!sessionId) return false;
-                const streamingMessageId = state.streamingMessageIds.get(sessionId) ?? null;
-                return typeof streamingMessageId === 'string' && streamingMessageId.length > 0;
-            })(),
-            isStreamingMessage: (() => {
-                const sessionId =
-                    (message.info as { sessionID?: string }).sessionID ??
-                    state.currentSessionId ??
-                    null;
-                if (!sessionId) return false;
-                return (state.streamingMessageIds.get(sessionId) ?? null) === message.info.id;
-            })(),
+            lifecyclePhase: isInActiveTurn
+                ? (state.messageStreamStates.get(message.info.id)?.phase ?? null)
+                : null,
+            isStreamingMessage: isInActiveTurn
+                ? (() => {
+                    const sessionId =
+                        (message.info as { sessionID?: string }).sessionID ??
+                        state.currentSessionId ??
+                        null;
+                    if (!sessionId) return false;
+                    return (state.streamingMessageIds.get(sessionId) ?? null) === message.info.id;
+                })()
+                : false,
             currentSessionId: state.currentSessionId,
             getAgentModelForSession: state.getAgentModelForSession,
             getSessionModelSelection: state.getSessionModelSelection,
@@ -177,7 +172,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
     const {
         lifecyclePhase,
-        hasActiveStreamInSession,
         isStreamingMessage,
         currentSessionId,
         getAgentModelForSession,
@@ -185,6 +179,17 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         revertToMessage,
         forkFromMessage,
     } = sessionState;
+
+    const hasActiveStreamInSession = (() => {
+        const liveState = useSessionStore.getState();
+        const sessionId =
+            (message.info as { sessionID?: string }).sessionID ??
+            liveState.currentSessionId ??
+            null;
+        if (!sessionId) return false;
+        const streamingMessageId = liveState.streamingMessageIds.get(sessionId) ?? null;
+        return typeof streamingMessageId === 'string' && streamingMessageId.length > 0;
+    })();
 
     streamPerfCount('ui.chat_message.render');
     if (isStreamingMessage) {
@@ -196,7 +201,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         }
     }
 
-    const providers = useConfigStore((state) => state.providers);
+    const providers = useConfigStore.getState().providers;
     const { showReasoningTraces, stickyUserHeader, chatRenderMode, showExpandedBashTools, showExpandedEditTools } = useUIStore(
         useShallow((state) => ({
             showReasoningTraces: state.showReasoningTraces,
@@ -237,11 +242,11 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
     const sessionId = message.info.sessionID;
 
-    // Subscribe to context changes so badges update immediately on mode switches.
+    // Keep non-active-turn rows detached from context-store churn.
     const { currentContextAgent, savedSessionAgentSelection } = useContextStore(
         useShallow((state) => ({
-            currentContextAgent: sessionId ? state.currentAgentContext.get(sessionId) : undefined,
-            savedSessionAgentSelection: sessionId ? state.sessionAgentSelections.get(sessionId) : undefined,
+            currentContextAgent: isInActiveTurn && sessionId ? state.currentAgentContext.get(sessionId) : undefined,
+            savedSessionAgentSelection: isInActiveTurn && sessionId ? state.sessionAgentSelections.get(sessionId) : undefined,
         }))
     );
 

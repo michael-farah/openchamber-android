@@ -1068,6 +1068,8 @@ const AssistantMessageBody: React.FC<Omit<MessageBodyProps, 'isUser'>> = ({
         return all.filter((segment) => segment.anchorMessageId === messageId);
     }, [isSortedRenderMode, messageId, turnGroupingContext?.activityGroupSegments]);
 
+    const hasAnchoredActivitySegments = activityGroupSegmentsForMessage.length > 0;
+
     const activityByPart = React.useMemo(() => {
         const byRef = new Map<Part, (typeof activityPartsForTurn)[number]>();
         const byId = new Map<string, (typeof activityPartsForTurn)[number]>();
@@ -1097,11 +1099,12 @@ const AssistantMessageBody: React.FC<Omit<MessageBodyProps, 'isUser'>> = ({
     const toggleActivityGroup = turnGroupingContext?.toggleGroup;
     const isActivityOwnerMessage = !isSortedRenderMode
         || !turnGroupingContext?.activityOwnerMessageId
-        || turnGroupingContext.activityOwnerMessageId === messageId;
+        || turnGroupingContext.activityOwnerMessageId === messageId
+        || hasAnchoredActivitySegments;
 
     const shouldRenderActivityGroup = isSortedRenderMode
         && isActivityOwnerMessage
-        && activityGroupSegmentsForMessage.length > 0
+        && hasAnchoredActivitySegments
         && Boolean(toggleActivityGroup);
 
 

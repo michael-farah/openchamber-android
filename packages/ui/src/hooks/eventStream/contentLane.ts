@@ -112,6 +112,16 @@ const handleMessagePartUpdated = (props: Record<string, unknown>, deps: ContentL
   deps.lastMessageEventBySessionRef.current.set(sessionId, Date.now());
   clearPendingStallTimer(deps.pendingMessageStallTimersRef, sessionId);
 
+  const liveStreamingMessageId = useSessionStore.getState().streamingMessageIds.get(sessionId) ?? null;
+  if (
+    typeof liveStreamingMessageId === 'string'
+    && liveStreamingMessageId.length > 0
+    && liveStreamingMessageId !== messageId
+  ) {
+    streamPerfCount('ui.event_stream.message_updated_dropped_non_active');
+    return true;
+  }
+
   const inferUserRoleFromPart = (): boolean => {
     const partType = typeof partExt.type === 'string' ? partExt.type : '';
     if (partType === 'subtask' || partType === 'agent' || partType === 'file') {
