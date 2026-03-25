@@ -126,6 +126,7 @@ interface ChatMessageProps {
     scrollToBottom?: (options?: { instant?: boolean; force?: boolean }) => void;
     turnGroupingContext?: TurnGroupingContext;
     assistantHeaderMessageId?: string;
+    isInActiveTurn?: boolean;
     animateUserOnMount?: boolean;
     onUserAnimationConsumed?: (messageId: string) => void;
 }
@@ -138,6 +139,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     animationHandlers,
     turnGroupingContext,
     assistantHeaderMessageId,
+    isInActiveTurn = false,
     animateUserOnMount = false,
     onUserAnimationConsumed,
 }) => {
@@ -189,6 +191,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         streamPerfCount('ui.chat_message.render.streaming');
     } else if (hasActiveStreamInSession) {
         streamPerfCount('ui.chat_message.render.static_during_stream');
+        if (!isInActiveTurn) {
+            streamPerfCount('ui.chat_message.render.static_outside_active_turn_during_stream');
+        }
     }
 
     const providers = useConfigStore((state) => state.providers);
@@ -1161,6 +1166,7 @@ export default React.memo(ChatMessage, (prev, next) => {
         && prev.onContentChange === next.onContentChange
         && prev.turnGroupingContext === next.turnGroupingContext
         && prev.assistantHeaderMessageId === next.assistantHeaderMessageId
+        && prev.isInActiveTurn === next.isInActiveTurn
         && prev.animateUserOnMount === next.animateUserOnMount
         && prev.onUserAnimationConsumed === next.onUserAnimationConsumed;
 });

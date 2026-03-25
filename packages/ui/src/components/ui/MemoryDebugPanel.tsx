@@ -117,6 +117,8 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
       chatMessageRender: counts.get('ui.chat_message.render') ?? 0,
       chatMessageRenderStreaming: counts.get('ui.chat_message.render.streaming') ?? 0,
       chatMessageRenderStaticDuringStream: counts.get('ui.chat_message.render.static_during_stream') ?? 0,
+      chatMessageRenderStaticOutsideActiveTurnDuringStream:
+        counts.get('ui.chat_message.render.static_outside_active_turn_during_stream') ?? 0,
     };
   }, [streamSnapshot.entries]);
 
@@ -346,6 +348,10 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
             <MetricCard label="ChatMessage Renders" value={streamMetricCounts.chatMessageRender} />
             <MetricCard label="ChatMessage Stream Renders" value={streamMetricCounts.chatMessageRenderStreaming} />
             <MetricCard label="ChatMessage Static During Stream" value={streamMetricCounts.chatMessageRenderStaticDuringStream} />
+            <MetricCard
+              label="ChatMessage Static Outside Active Turn"
+              value={streamMetricCounts.chatMessageRenderStaticOutsideActiveTurnDuringStream}
+            />
           </div>
 
           <PerfSection
