@@ -1,7 +1,7 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { getAgentDisplayName } from './mobileControlsUtils';
 import { getAgentColor } from '@/lib/agentColors';
 
@@ -16,8 +16,8 @@ const LONG_PRESS_MS = 500;
 // NOTE: Use pointer events instead of onClick to keep soft keyboard open on mobile
 export const MobileAgentButton: React.FC<MobileAgentButtonProps> = ({ onCycleAgent, onOpenAgentPanel, className }) => {
     const { currentAgentName, getVisibleAgents } = useConfigStore();
-    const currentSessionId = useSessionStore((state) => state.currentSessionId);
-    const sessionAgentName = useSessionStore((state) =>
+    const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+    const sessionAgentName = useSessionUIStore((state) =>
         currentSessionId ? state.getSessionAgentSelection(currentSessionId) : null
     );
 

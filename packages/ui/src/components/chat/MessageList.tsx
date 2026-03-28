@@ -1,6 +1,5 @@
 import React from 'react';
 import type { Part } from '@opencode-ai/sdk/v2';
-import { useShallow } from 'zustand/react/shallow';
 
 import ChatMessage from './ChatMessage';
 import { areOptionalRenderRelevantMessagesEqual, areRenderRelevantMessagesEqual } from './message/renderCompare';
@@ -16,8 +15,10 @@ import { filterSyntheticParts } from '@/lib/messages/synthetic';
 import type { ChatMessageEntry, TurnRecord, TurnGroupingContext } from './lib/turns/types';
 import { useTurnRecords } from './hooks/useTurnRecords';
 import { applyRetryOverlay } from './lib/turns/applyRetryOverlay';
-import { useSessionStore } from '@/stores/useSessionStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { useStreamingStore } from '@/sync/streaming';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSessionStatus } from '@/sync/sync-context';
 import { useDeviceInfo } from '@/lib/device';
 import { FadeInDisabledProvider } from './message/FadeInOnReveal';
 import { hasPendingUserSendAnimation, consumePendingUserSendAnimation } from '@/lib/userSendAnimation';
@@ -1009,7 +1010,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     void _disableStaging;
     const { isMobile } = useDeviceInfo();
     const { isWorking: sessionIsWorking } = useCurrentSessionActivity();
-    const activeStreamingMessageId = useSessionStore((state) => state.streamingMessageIds.get(sessionKey) ?? null);
+    const activeStreamingMessageId = useStreamingStore((state) => state.streamingMessageIds.get(sessionKey) ?? null);
     const { working } = useAssistantStatus();
     const currentAgentName = useConfigStore((state) => state.currentAgentName);
     const stickyUserHeader = useUIStore(state => state.stickyUserHeader);
@@ -1163,20 +1164,19 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
         return output;
     }), [messages]);
 
-    const activeRetryStatus = useSessionStore(
-        useShallow((state) => {
-            const sessionId = state.currentSessionId;
-            if (!sessionId) return null;
-            const status = state.sessionStatus?.get(sessionId);
-            if (!status || status.type !== 'retry') return null;
-            const rawMessage = typeof status.message === 'string' ? status.message.trim() : '';
-            return {
-                sessionId,
-                message: rawMessage || 'Quota limit reached. Retrying automatically.',
-                confirmedAt: status.confirmedAt,
-            };
-        })
-    );
+    const currentSessionIdForRetry = useSessionUIStore((s) => s.currentSessionId);
+    const retryStatusRaw = useSessionStatus(currentSessionIdForRetry ?? '');
+    const activeRetryStatus = React.useMemo(() => {
+        if (!currentSessionIdForRetry) return null;
+        const status = retryStatusRaw;
+        if (!status || status.type !== 'retry') return null;
+        const rawMessage = typeof (status as { message?: string }).message === 'string' ? ((status as { message?: string }).message ?? '').trim() : '';
+        return {
+            sessionId: currentSessionIdForRetry,
+            message: rawMessage || 'Quota limit reached. Retrying automatically.',
+            confirmedAt: (status as { confirmedAt?: number }).confirmedAt,
+        };
+    }, [currentSessionIdForRetry, retryStatusRaw]);
 
     const activeRetrySessionId = activeRetryStatus?.sessionId ?? null;
     const activeRetryMessage = activeRetryStatus?.message

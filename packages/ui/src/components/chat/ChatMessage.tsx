@@ -4,10 +4,12 @@ import { useShallow } from 'zustand/react/shallow';
 
 import { defaultCodeDark, defaultCodeLight } from '@/lib/codeTheme';
 import { MessageFreshnessDetector } from '@/lib/messageFreshness';
-import { useSessionStore } from '@/stores/useSessionStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useContextStore } from '@/stores/contextStore';
+import { useStreamingStore } from '@/sync/streaming';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import * as sessionActions from '@/sync/session-actions';
 import { useDeviceInfo } from '@/lib/device';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { generateSyntaxTheme } from '@/lib/theme/syntaxThemeGenerator';
@@ -147,49 +149,19 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const { currentTheme } = useThemeSystem();
     const messageContainerRef = React.useRef<HTMLDivElement | null>(null);
 
-    const sessionState = useSessionStore(
-        useShallow((state) => ({
-            lifecyclePhase: isInActiveTurn
-                ? (state.messageStreamStates.get(message.info.id)?.phase ?? null)
-                : null,
-            isStreamingMessage: isInActiveTurn
-                ? (() => {
-                    const sessionId =
-                        (message.info as { sessionID?: string }).sessionID ??
-                        state.currentSessionId ??
-                        null;
-                    if (!sessionId) return false;
-                    return (state.streamingMessageIds.get(sessionId) ?? null) === message.info.id;
-                })()
-                : false,
-            currentSessionId: state.currentSessionId,
-            getAgentModelForSession: state.getAgentModelForSession,
-            getSessionModelSelection: state.getSessionModelSelection,
-            revertToMessage: state.revertToMessage,
-            forkFromMessage: state.forkFromMessage,
-        }))
-    );
+    const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
+    const streamState = useStreamingStore((s) => s.messageStreamStates.get(message.info.id));
+    const lifecyclePhase = isInActiveTurn ? (streamState?.phase ?? null) : null;
 
-    const {
-        lifecyclePhase,
-        isStreamingMessage,
-        currentSessionId,
-        getAgentModelForSession,
-        getSessionModelSelection,
-        revertToMessage,
-        forkFromMessage,
-    } = sessionState;
+    const msgSessionId = (message.info as { sessionID?: string }).sessionID ?? currentSessionId ?? null;
+    const streamingMsgForSession = useStreamingStore((s) => msgSessionId ? s.streamingMessageIds.get(msgSessionId) ?? null : null);
+    const isStreamingMessage = isInActiveTurn ? streamingMsgForSession === message.info.id : false;
+    const hasActiveStreamInSession = typeof streamingMsgForSession === 'string' && streamingMsgForSession.length > 0;
 
-    const hasActiveStreamInSession = (() => {
-        const liveState = useSessionStore.getState();
-        const sessionId =
-            (message.info as { sessionID?: string }).sessionID ??
-            liveState.currentSessionId ??
-            null;
-        if (!sessionId) return false;
-        const streamingMessageId = liveState.streamingMessageIds.get(sessionId) ?? null;
-        return typeof streamingMessageId === 'string' && streamingMessageId.length > 0;
-    })();
+    const getAgentModelForSession = useSessionUIStore((s) => s.getAgentModelForSession);
+    const getSessionModelSelection = useSessionUIStore((s) => s.getSessionModelSelection);
+    const revertToMessage = sessionActions.revertToMessage;
+    const forkFromMessage = sessionActions.forkFromMessage;
 
     streamPerfCount('ui.chat_message.render');
     if (isStreamingMessage) {

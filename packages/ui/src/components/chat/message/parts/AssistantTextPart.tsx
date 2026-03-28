@@ -6,7 +6,7 @@ import type { ContentChangeReason } from '@/hooks/useChatScrollManager';
 import { useStreamingTextThrottle } from '../../hooks/useStreamingTextThrottle';
 import { resolveAssistantDisplayText, shouldRenderAssistantText } from './assistantTextVisibility';
 import { streamPerfCount, streamPerfObserve } from '@/stores/utils/streamDebug';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionMessageRecords } from '@/sync/sync-context';
 
 type PartWithText = Part & { text?: string; content?: string; value?: string; time?: { start?: number; end?: number } };
 
@@ -26,19 +26,20 @@ const AssistantTextPart: React.FC<AssistantTextPartProps> = ({
     streamPhase,
     chatRenderMode = 'live',
 }) => {
-    const livePart = useSessionStore(React.useCallback((state) => {
+    const messageRecords = useSessionMessageRecords(sessionId ?? '');
+    const livePart = React.useMemo(() => {
         if (!sessionId || typeof part.id !== 'string' || part.id.length === 0) {
             return null;
         }
 
-        const message = (state.messages.get(sessionId) ?? []).find((entry) => entry.info.id === messageId);
+        const message = messageRecords.find((entry) => entry.info.id === messageId);
         if (!message) {
             return null;
         }
 
-        const match = message.parts.find((candidate) => candidate?.id === part.id);
+        const match = message.parts.find((candidate: { id?: string }) => candidate?.id === part.id);
         return match ?? null;
-    }, [messageId, part.id, sessionId]));
+    }, [messageRecords, messageId, part.id, sessionId]);
 
     const renderPart = livePart ?? part;
     const partWithText = renderPart as PartWithText;

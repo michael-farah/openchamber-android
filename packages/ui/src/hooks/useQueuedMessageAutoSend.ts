@@ -1,30 +1,23 @@
 import React from 'react';
 import type { AttachedFile } from '@/stores/types/sessionTypes';
 import { useMessageQueueStore, type QueuedMessage } from '@/stores/messageQueueStore';
-import { useSessionStore } from '@/stores/useSessionStore';
-import { useMessageStore } from '@/stores/messageStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useContextStore } from '@/stores/contextStore';
 import { parseAgentMentions } from '@/lib/messages/agentMentions';
+import { getSyncSessionStatus } from '@/sync/sync-refs';
+import { useDirectorySync } from '@/sync/sync-context';
 
 type SessionStatusType = 'idle' | 'busy' | 'retry';
 
 const RECENT_ABORT_WINDOW_MS = 2000;
 
 const hasRecentAbort = (sessionId: string): boolean => {
-  const abortRecord = useSessionStore.getState().sessionAbortFlags.get(sessionId);
+  const abortRecord = useSessionUIStore.getState().sessionAbortFlags.get(sessionId);
   if (!abortRecord) {
     return false;
   }
   return Date.now() - abortRecord.timestamp < RECENT_ABORT_WINDOW_MS;
-};
-
-const setSessionStatus = (sessionId: string, type: SessionStatusType) => {
-  useSessionStore.setState((state) => {
-    const next = new Map(state.sessionStatus ?? new Map());
-    next.set(sessionId, { type });
-    return { sessionStatus: next };
-  });
 };
 
 const buildQueuedPayload = (queue: QueuedMessage[]) => {
@@ -64,7 +57,7 @@ const buildQueuedPayload = (queue: QueuedMessage[]) => {
 const resolveSessionSendConfig = (sessionId: string) => {
   const context = useContextStore.getState();
   const config = useConfigStore.getState();
-  const message = useMessageStore.getState();
+  const message = useSessionUIStore.getState();
 
   const selectedAgent =
     context.getSessionAgentSelection(sessionId)
@@ -104,7 +97,7 @@ const resolveSessionSendConfig = (sessionId: string) => {
 export function useQueuedMessageAutoSend(options?: { enabled?: boolean }) {
   const enabled = options?.enabled ?? true;
   const queuedMessages = useMessageQueueStore((state) => state.queuedMessages);
-  const sessionStatus = useSessionStore((state) => state.sessionStatus);
+  const sessionStatusRecord = useDirectorySync((state) => state.session_status);
 
   const inFlightSessionsRef = React.useRef<Set<string>>(new Set());
   const previousStatusRef = React.useRef<Map<string, SessionStatusType>>(new Map());
@@ -125,7 +118,7 @@ export function useQueuedMessageAutoSend(options?: { enabled?: boolean }) {
         return;
       }
 
-      const currentStatus = useSessionStore.getState().sessionStatus?.get(sessionId)?.type ?? 'idle';
+      const currentStatus = getSyncSessionStatus(sessionId)?.type ?? 'idle';
       if (currentStatus !== 'idle') {
         return;
       }
@@ -141,15 +134,13 @@ export function useQueuedMessageAutoSend(options?: { enabled?: boolean }) {
       }
 
       inFlightSessionsRef.current.add(sessionId);
-      setSessionStatus(sessionId, 'busy');
 
       try {
-        await useMessageStore.getState().sendMessage(
+        await useSessionUIStore.getState().sendMessage(
           payload.primaryText,
           resolved.providerID,
           resolved.modelID,
           resolved.agent,
-          sessionId,
           payload.primaryAttachments,
           payload.agentMentionName,
           payload.additionalParts,
@@ -162,7 +153,6 @@ export function useQueuedMessageAutoSend(options?: { enabled?: boolean }) {
           removeFromQueue(sessionId, item.id);
         });
       } catch (error) {
-        setSessionStatus(sessionId, 'idle');
         console.warn('[queue] queued auto-send failed:', error);
       } finally {
         inFlightSessionsRef.current.delete(sessionId);
@@ -170,14 +160,15 @@ export function useQueuedMessageAutoSend(options?: { enabled?: boolean }) {
     };
 
     const nextStatusMap = new Map(previousStatusRef.current);
-    const statusEntries = sessionStatus ? Array.from(sessionStatus.entries()) : [];
-    statusEntries.forEach(([sessionId, status]) => {
-      nextStatusMap.set(sessionId, status.type);
-    });
+    for (const [sessionId, status] of Object.entries(sessionStatusRecord)) {
+      if (status) {
+        nextStatusMap.set(sessionId, status.type as SessionStatusType);
+      }
+    }
 
     const queueEntries = Object.entries(queuedMessages);
     queueEntries.forEach(([sessionId, queue]) => {
-      const currentStatusType = (sessionStatus?.get(sessionId)?.type ?? 'idle') as SessionStatusType;
+      const currentStatusType = (sessionStatusRecord[sessionId]?.type ?? 'idle') as SessionStatusType;
       const previousStatusType = previousStatusRef.current.get(sessionId);
       const becameIdle =
         (previousStatusType === 'busy' || previousStatusType === 'retry')
@@ -192,5 +183,5 @@ export function useQueuedMessageAutoSend(options?: { enabled?: boolean }) {
     });
 
     previousStatusRef.current = nextStatusMap;
-  }, [enabled, queuedMessages, sessionStatus]);
+  }, [enabled, queuedMessages, sessionStatusRecord]);
 }

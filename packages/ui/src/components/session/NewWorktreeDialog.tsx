@@ -34,9 +34,9 @@ import { cn } from '@/lib/utils';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { useUIStore } from '@/stores/useUIStore';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import * as sessionActions from '@/sync/session-actions';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { useMessageStore } from '@/stores/messageStore';
 import { useContextStore } from '@/stores/contextStore';
 import { validateWorktreeCreate, createWorktree } from '@/lib/worktrees/worktreeManager';
 import { withWorktreeUpstreamDefaults } from '@/lib/worktrees/worktreeCreate';
@@ -256,8 +256,7 @@ export function NewWorktreeDialog({
   }, [branches]);
   
   // Get existing worktrees for the current project to avoid conflicts
-  const availableWorktreesByProject = useSessionStore((state) => state.availableWorktreesByProject);
-  const loadSessions = useSessionStore((state) => state.loadSessions);
+  const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
   const existingWorktreeNames = React.useMemo(() => {
     if (!projectDirectory) return new Set<string>();
     const worktrees = availableWorktreesByProject.get(projectDirectory) ?? [];
@@ -399,7 +398,7 @@ export function NewWorktreeDialog({
     }
 
     const configState = useConfigStore.getState();
-    const lastUsedProvider = useMessageStore.getState().lastUsedProvider;
+    const lastUsedProvider = useSessionUIStore.getState().lastUsedProvider;
     const defaultModel = resolveDefaultModelSelection();
     const providerID = defaultModel?.providerID || configState.currentProviderId || lastUsedProvider?.providerID;
     const modelID = defaultModel?.modelID || configState.currentModelId || lastUsedProvider?.modelID;
@@ -847,16 +846,16 @@ Nice-to-have:
             ? `#${linkedPrState.number} ${linkedPrState.title}`.trim()
             : 'New session';
 
-        const session = await useSessionStore.getState().createSession(sessionTitle, metadata.path, null);
+        const session = await sessionActions.createSession(sessionTitle, metadata.path, null);
         if (!session?.id) {
           throw new Error('Failed to create session');
         }
 
         createdSessionId = session.id;
-        void useSessionStore.getState().updateSessionTitle(session.id, sessionTitle).catch(() => undefined);
+        void sessionActions.updateSessionTitle(session.id, sessionTitle).catch(() => undefined);
 
         try {
-          useSessionStore.getState().initializeNewOpenChamberSession(session.id, useConfigStore.getState().agents);
+          useSessionUIStore.getState().initializeNewOpenChamberSession(session.id, useConfigStore.getState().agents);
         } catch {
           // ignore
         }
@@ -870,8 +869,6 @@ Nice-to-have:
       toast.success('Worktree created', {
         description: `${metadata.branch || metadata.name}${sourceLabel ? ` from ${sourceLabel}` : ''} - bootstrapping in background`,
       });
-
-      void loadSessions().catch(() => undefined);
 
       onOpenChange(false);
 

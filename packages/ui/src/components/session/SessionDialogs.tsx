@@ -18,7 +18,8 @@ import type { Session } from '@opencode-ai/sdk/v2';
 import type { WorktreeMetadata } from '@/types/worktree';
 import { getWorktreeStatus } from '@/lib/worktrees/worktreeStatus';
 import { removeProjectWorktree } from '@/lib/worktrees/worktreeManager';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import * as sessionActions from '@/sync/session-actions';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useUIStore } from '@/stores/useUIStore';
@@ -59,17 +60,10 @@ export const SessionDialogs: React.FC = () => {
     const [hasCompletedDirtyCheck, setHasCompletedDirtyCheck] = React.useState(false);
     const [dirtyWorktreePaths, setDirtyWorktreePaths] = React.useState<Set<string>>(new Set());
 
-    const {
-        deleteSession,
-        deleteSessions,
-        archiveSession,
-        archiveSessions,
-        loadSessions,
-        getWorktreeMetadata,
-        newSessionDraft,
-        setNewSessionDraftTarget,
-        setDraftBootstrapPendingDirectory,
-    } = useSessionStore();
+    const { getWorktreeMetadata, newSessionDraft, setNewSessionDraftTarget, setDraftBootstrapPendingDirectory } = useSessionUIStore();
+    const deleteSession = sessionActions.deleteSession;
+    const archiveSession = sessionActions.archiveSession;
+    const { deleteSessions, archiveSessions } = useSessionUIStore();
     const showDeletionDialog = useUIStore((state) => state.showDeletionDialog);
     const setShowDeletionDialog = useUIStore((state) => state.setShowDeletionDialog);
     const { currentDirectory, homeDirectory, isHomeReady } = useDirectoryStore();
@@ -113,24 +107,7 @@ export const SessionDialogs: React.FC = () => {
         isProcessingDelete || !isWorktreeDelete || !canRemoveRemoteBranches;
     const deleteLocalOptionDisabled = isProcessingDelete || !isWorktreeDelete;
 
-    React.useEffect(() => {
-        loadSessions();
-    }, [loadSessions, currentDirectory]);
-
-    const projectsKey = React.useMemo(
-        () => projects.map((project) => `${project.id}:${project.path}`).join('|'),
-        [projects],
-    );
-    const lastProjectsKeyRef = React.useRef(projectsKey);
-
-    React.useEffect(() => {
-        if (projectsKey === lastProjectsKeyRef.current) {
-            return;
-        }
-
-        lastProjectsKeyRef.current = projectsKey;
-        loadSessions();
-    }, [loadSessions, projectsKey]);
+    // Session loading is handled by sync bootstrap — no manual loadSessions needed.
 
     React.useEffect(() => {
         if (hasShownInitialDirectoryPrompt || !isHomeReady || projects.length > 0) {
@@ -444,7 +421,6 @@ export const SessionDialogs: React.FC = () => {
                     description: renderToastDescription(archiveNote),
                 });
                 closeDeleteDialog();
-                loadSessions();
                 return;
             }
 
@@ -497,10 +473,8 @@ export const SessionDialogs: React.FC = () => {
                 if (isWorktreeDelete && deleteDialog.worktree && failedIds.length === 0) {
                     // Remove selected worktree even if per-session metadata is missing.
                     // Use same projectRef logic as the no-sessions path.
-                    const removed = await removeSelectedWorktree(deleteDialog.worktree, deleteLocalBranch);
-                    if (removed) {
-                        await loadSessions();
-                    }
+                    await removeSelectedWorktree(deleteDialog.worktree, deleteLocalBranch);
+                    // sync handles session refresh automatically
                 }
 
                 if (deletedIds.length > 0) {
@@ -537,10 +511,8 @@ export const SessionDialogs: React.FC = () => {
             }
 
             if (isWorktreeDelete && deleteDialog.sessions.length === 1 && deleteDialog.worktree) {
-                const removed = await removeSelectedWorktree(deleteDialog.worktree, deleteLocalBranch);
-                if (removed) {
-                    await loadSessions();
-                }
+                await removeSelectedWorktree(deleteDialog.worktree, deleteLocalBranch);
+                // sync bootstrap refreshes sessions automatically
             }
 
             closeDeleteDialog();
@@ -560,7 +532,6 @@ export const SessionDialogs: React.FC = () => {
         isWorktreeDelete,
         canRemoveRemoteBranches,
         removeSelectedWorktree,
-        loadSessions,
     ]);
 
     const targetWorktree = deleteDialog?.worktree ?? deleteDialogSummaries[0]?.metadata ?? null;

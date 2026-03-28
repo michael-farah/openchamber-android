@@ -1,6 +1,7 @@
 import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSessions } from '@/sync/sync-context';
 import { useUIStore } from '@/stores/useUIStore';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -64,10 +65,10 @@ export const useSessionAutoCleanup = (options?: CleanupOptions) => {
   const autoRun = options?.autoRun !== false;
   const enabled = options?.enabled ?? true;
 
-  const sessions = useSessionStore((state) => state.sessions);
-  const currentSessionId = useSessionStore((state) => state.currentSessionId);
-  const isLoading = useSessionStore((state) => state.isLoading);
-  const deleteSessions = useSessionStore((state) => state.deleteSessions);
+  const sessions = useSessions();
+  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+  const isLoading = useSessionUIStore((state) => state.isLoading);
+  const deleteSessions = useSessionUIStore((state) => state.deleteSessions);
 
   const autoDeleteEnabled = useUIStore((state) => state.autoDeleteEnabled);
   const autoDeleteAfterDays = useUIStore((state) => state.autoDeleteAfterDays);

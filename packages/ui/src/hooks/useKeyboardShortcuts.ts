@@ -1,5 +1,6 @@
 import React from 'react';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import * as sessionActions from '@/sync/session-actions';
 import { useUIStore } from '@/stores/useUIStore';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useAssistantStatus } from '@/hooks/useAssistantStatus';
@@ -10,7 +11,8 @@ import { showOpenCodeStatus } from '@/lib/openCodeStatus';
 import { eventMatchesShortcut, getEffectiveShortcutCombo } from '@/lib/shortcuts';
 
 export const useKeyboardShortcuts = () => {
-  const { openNewSessionDraft, abortCurrentOperation, armAbortPrompt, clearAbortPrompt, currentSessionId } = useSessionStore();
+  const { openNewSessionDraft, armAbortPrompt, clearAbortPrompt, currentSessionId } = useSessionUIStore();
+    const abortCurrentOperation = sessionActions.abortCurrentOperation;;
   const {
     toggleCommandPalette,
     toggleHelpDialog,
@@ -263,7 +265,7 @@ export const useKeyboardShortcuts = () => {
         configState.cycleCurrentVariant();
 
         const nextVariant = useConfigStore.getState().currentVariant;
-        const sessionState = useSessionStore.getState();
+        const sessionState = useSessionUIStore.getState();
         const sessionId = sessionState.currentSessionId;
         const agentName = useConfigStore.getState().currentAgentName;
         const providerId = useConfigStore.getState().currentProviderId;
@@ -380,7 +382,7 @@ export const useKeyboardShortcuts = () => {
         if (primedUntil && now < primedUntil) {
           e.preventDefault();
           resetAbortPriming();
-          void abortCurrentOperation(sessionId || undefined);
+          void abortCurrentOperation(sessionId ?? '');
           return;
         }
 

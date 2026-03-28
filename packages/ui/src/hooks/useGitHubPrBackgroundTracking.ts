@@ -5,7 +5,8 @@ import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSessions } from '@/sync/sync-context';
 
 const MAX_BACKGROUND_PR_DIRECTORIES = 20;
 const ACTIVE_DIRECTORY_REFRESH_TTL_MS = 15_000;
@@ -144,10 +145,9 @@ export const useGitHubPrBackgroundTracking = (
 ): void => {
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
   const projects = useProjectsStore((state) => state.projects);
-  const sessions = useSessionStore((state) => state.sessions);
-  const archivedSessions = useSessionStore((state) => state.archivedSessions);
-  const availableWorktreesByProject = useSessionStore((state) => state.availableWorktreesByProject);
-  const worktreeMetadata = useSessionStore((state) => state.worktreeMetadata);
+  const sessions = useSessions();
+  const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
+  const worktreeMetadata = useSessionUIStore((state) => state.worktreeMetadata);
 
   const githubAuthStatus = useGitHubAuthStore((state) => state.status);
   const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
@@ -229,7 +229,7 @@ export const useGitHubPrBackgroundTracking = (
       add(metadata.path);
     });
 
-    [...sessions, ...archivedSessions]
+    [...sessions]
       .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
       .forEach((rawSession) => {
         const session = rawSession as SessionLike;
@@ -238,7 +238,7 @@ export const useGitHubPrBackgroundTracking = (
       });
 
     return Array.from(ordered.values()).slice(0, MAX_BACKGROUND_PR_DIRECTORIES);
-  }, [archivedSessions, availableWorktreesByProject, currentDirectory, projects, sessions, worktreeMetadata]);
+  }, [availableWorktreesByProject, currentDirectory, projects, sessions, worktreeMetadata]);
 
   React.useEffect(() => {
     let cancelled = false;

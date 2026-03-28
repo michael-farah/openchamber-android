@@ -10,7 +10,7 @@ import {
   CommandShortcut,
 } from '@/components/ui/command';
 import { useUIStore } from '@/stores/useUIStore';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useDeviceInfo } from '@/lib/device';
@@ -39,11 +39,7 @@ export const CommandPalette: React.FC = () => {
     shortcutOverrides,
   } = useUIStore();
 
-  const {
-    openNewSessionDraft,
-    setCurrentSession,
-    getSessionsByDirectory,
-  } = useSessionStore();
+  const { openNewSessionDraft, setCurrentSession, getSessionsByDirectory } = useSessionUIStore();;
 
   const { currentDirectory } = useDirectoryStore();
   const { themeMode, setThemeMode } = useThemeSystem();

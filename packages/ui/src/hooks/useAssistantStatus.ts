@@ -2,7 +2,8 @@ import React from 'react';
 import type { AssistantMessage, Message, Part, ReasoningPart, TextPart, ToolPart } from '@opencode-ai/sdk/v2';
 
 import type { MessageStreamPhase } from '@/stores/types/sessionTypes';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useDirectorySync, useSessionPermissions, useSessionStatus } from '@/sync/sync-context';
 import { isFullySyntheticMessage } from '@/lib/messages/synthetic';
 import { useCurrentSessionActivity } from './useSessionActivity';
 
@@ -51,6 +52,11 @@ interface AssistantSessionMessageRecord {
     parts: Part[];
 }
 
+type SessionMessageRecord = {
+    info: Message;
+    parts: Part[];
+};
+
 const DEFAULT_WORKING: WorkingSummary = {
     activity: 'idle',
     hasWorkingContext: false,
@@ -73,9 +79,9 @@ const DEFAULT_WORKING: WorkingSummary = {
     retryInfo: null,
 };
 
-const EMPTY_SESSION_MESSAGES: Array<{ info: Message; parts: Part[] }> = [];
-const EMPTY_SESSION_PERMISSIONS: unknown[] = [];
-
+const EMPTY_MESSAGES: Message[] = [];
+const EMPTY_PARTS: Part[] = [];
+const EMPTY_SESSION_MESSAGES: SessionMessageRecord[] = [];
 const isAssistantMessage = (message: Message): message is AssistantMessageWithState => message.role === 'assistant';
 
 const isReasoningPart = (part: Part): part is ReasoningPart => part.type === 'reasoning';
@@ -116,27 +122,37 @@ const getToolDisplayName = (part: ToolPart): string => {
 };
 
 export function useAssistantStatus(): AssistantStatusSnapshot {
-    const currentSessionId = useSessionStore((state) => state.currentSessionId);
+    const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
 
-    const sessionMessages = useSessionStore(
+    const rawSessionMessages = useDirectorySync(
         React.useCallback((state) => {
             if (!currentSessionId) {
+                return EMPTY_MESSAGES;
+            }
+            return state.message[currentSessionId] ?? EMPTY_MESSAGES;
+        }, [currentSessionId])
+    );
+
+    const allParts = useDirectorySync(
+        React.useCallback((state) => state.part, [])
+    );
+
+    const sessionMessages = React.useMemo<SessionMessageRecord[]>(
+        () => {
+            if (rawSessionMessages.length === 0) {
                 return EMPTY_SESSION_MESSAGES;
             }
-            return (state.messages.get(currentSessionId) ?? EMPTY_SESSION_MESSAGES) as Array<{ info: Message; parts: Part[] }>;
-        }, [currentSessionId])
+            return rawSessionMessages.map((msg) => ({
+                info: msg,
+                parts: allParts[msg.id] ?? EMPTY_PARTS,
+            }));
+        },
+        [allParts, rawSessionMessages]
     );
 
-    const sessionPermissionRequests = useSessionStore(
-        React.useCallback((state) => {
-            if (!currentSessionId) {
-                return EMPTY_SESSION_PERMISSIONS;
-            }
-            return state.permissions?.get(currentSessionId) ?? EMPTY_SESSION_PERMISSIONS;
-        }, [currentSessionId])
-    );
+    const sessionPermissionRequests = useSessionPermissions(currentSessionId ?? '');
 
-    const sessionAbortRecord = useSessionStore(
+    const sessionAbortRecord = useSessionUIStore(
         React.useCallback((state) => {
             if (!currentSessionId) {
                 return null;
@@ -147,17 +163,15 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
 
     const { phase: activityPhase, isWorking: isPhaseWorking } = useCurrentSessionActivity();
 
-    const sessionRetryAttempt = useSessionStore((state) => {
-        if (!currentSessionId || !state.sessionStatus) return undefined;
-        const s = state.sessionStatus.get(currentSessionId);
-        return s?.type === 'retry' ? s.attempt : undefined;
-    });
+    const currentSessionStatus = useSessionStatus(currentSessionId ?? '');
 
-    const sessionRetryNext = useSessionStore((state) => {
-        if (!currentSessionId || !state.sessionStatus) return undefined;
-        const s = state.sessionStatus.get(currentSessionId);
-        return s?.type === 'retry' ? s.next : undefined;
-    });
+    const sessionRetryAttempt = currentSessionStatus?.type === 'retry'
+        ? (currentSessionStatus as { type: 'retry'; attempt?: number }).attempt
+        : undefined;
+
+    const sessionRetryNext = currentSessionStatus?.type === 'retry'
+        ? (currentSessionStatus as { type: 'retry'; next?: number }).next
+        : undefined;
 
     type ParsedStatusResult = {
         activePartType: 'text' | 'tool' | 'reasoning' | 'editing' | undefined;

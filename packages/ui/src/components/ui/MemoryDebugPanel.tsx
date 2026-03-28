@@ -1,7 +1,9 @@
 import React from 'react';
 import { RiBarChartBoxLine, RiCloseLine, RiDatabase2Line, RiFileCopyLine, RiPulseLine, RiRefreshLine } from '@remixicon/react';
 
-import { useSessionStore, MEMORY_LIMITS } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSessions, useDirectorySync } from '@/sync/sync-context';
+import { MEMORY_LIMITS } from '@/stores/types/sessionTypes';
 import { useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
 import { getBackgroundTrimLimit } from '@/stores/types/sessionTypes';
 import { getStreamPerfSnapshot, getVsCodeStreamPerfSnapshot, resetStreamPerf, type StreamPerfSnapshot } from '@/stores/utils/streamDebug';
@@ -97,12 +99,9 @@ const PerfSection: React.FC<{ title: string; snapshot: StreamPerfSnapshot; empty
 export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
   const [activeTab, setActiveTab] = React.useState<DebugTab>('memory');
   const [copyState, setCopyState] = React.useState<'idle' | 'copied' | 'error'>('idle');
-  const {
-    sessions,
-    messages,
-    sessionMemoryState,
-    currentSessionId,
-  } = useSessionStore();
+  const { sessionMemoryState, currentSessionId } = useSessionUIStore();
+  const sessions = useSessions();
+  const messageRecord = useDirectorySync((state) => state.message);
   const totalGitHubRequests = useGitHubPrStatusStore((state) => state.totalRequestCount);
   const [streamSnapshot, setStreamSnapshot] = React.useState<StreamPerfSnapshot>(() => getStreamPerfSnapshot());
   const [vscodeStreamSnapshot, setVsCodeStreamSnapshot] = React.useState<StreamPerfSnapshot>(() => getVsCodeStreamPerfSnapshot());
@@ -147,15 +146,15 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
 
   const totalMessages = React.useMemo(() => {
     let total = 0;
-    messages.forEach((sessionMessages) => {
-      total += sessionMessages.length;
-    });
+    for (const sessionId of Object.keys(messageRecord)) {
+      total += messageRecord[sessionId]?.length ?? 0;
+    }
     return total;
-  }, [messages]);
+  }, [messageRecord]);
 
   const sessionStats = React.useMemo(() => {
     return sessions.map(session => {
-      const messageCount = messages.get(session.id)?.length || 0;
+      const messageCount = messageRecord[session.id]?.length || 0;
       const memoryState = sessionMemoryState.get(session.id);
       return {
         id: session.id,
@@ -168,9 +167,9 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
         isCurrent: session.id === currentSessionId
       };
     }).sort((a, b) => b.lastAccessed - a.lastAccessed);
-  }, [sessions, messages, sessionMemoryState, currentSessionId]);
+  }, [sessions, messageRecord, sessionMemoryState, currentSessionId]);
 
-  const cachedSessionCount = messages.size;
+  const cachedSessionCount = Object.keys(messageRecord).length;
 
   const handleCopyStreamingDebug = React.useCallback(async () => {
     try {
@@ -313,7 +312,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
                     console.log('[DebugPanel] Session store state:', {
                       sessions: sessions.map(s => ({ id: s.id, title: s.title })),
                       currentSessionId,
-                      cachedSessions: Array.from(messages.keys()),
+                      cachedSessions: Object.keys(messageRecord),
                       memoryStates: Object.fromEntries(sessionMemoryState),
                     });
                   }}

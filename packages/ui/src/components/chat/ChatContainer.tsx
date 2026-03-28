@@ -1,10 +1,8 @@
 import React from 'react';
 import { RiArrowLeftLine } from '@remixicon/react';
-import { useShallow } from 'zustand/react/shallow';
 import type { Message, Part } from '@opencode-ai/sdk/v2';
 
 import { ChatInput } from './ChatInput';
-import { useSessionStore } from '@/stores/useSessionStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { Skeleton } from '@/components/ui/skeleton';
 import ChatEmptyState from './ChatEmptyState';
@@ -14,6 +12,7 @@ import { ScrollShadow } from '@/components/ui/ScrollShadow';
 import { useChatScrollManager } from '@/hooks/useChatScrollManager';
 import { useChatTimelineController } from './hooks/useChatTimelineController';
 import { useChatTurnNavigation } from './hooks/useChatTurnNavigation';
+import { useTimelineStaging } from '@/hooks/useTimelineStaging';
 import { useDeviceInfo } from '@/lib/device';
 import { Button } from '@/components/ui/button';
 import { OverlayScrollbar } from '@/components/ui/OverlayScrollbar';
@@ -24,6 +23,17 @@ import {
     collectVisibleSessionIdsForBlockingRequests,
     flattenBlockingRequests,
 } from './lib/blockingRequests';
+
+// New sync system imports
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useStreamingStore } from '@/sync/streaming';
+import {
+    useSessionMessageRecords,
+    useSessions,
+    useDirectorySync,
+    useSessionStatus,
+} from '@/sync/sync-context';
+import { useSync } from '@/sync/use-sync';
 
 const EMPTY_MESSAGES: Array<{ info: Message; parts: Part[] }> = [];
 const EMPTY_PERMISSIONS: PermissionRequest[] = [];
@@ -70,99 +80,99 @@ const HYDRATING_SKELETON_ITEMS: Array<{
 ];
 
 export const ChatContainer: React.FC = () => {
-    const {
-        currentSessionId,
-        loadMessages,
-        loadMoreMessages,
-        updateViewportAnchor,
-        openNewSessionDraft,
-        setCurrentSession,
-        newSessionDraft,
-    } = useSessionStore(
-        useShallow((state) => ({
-            currentSessionId: state.currentSessionId,
-            loadMessages: state.loadMessages,
-            loadMoreMessages: state.loadMoreMessages,
-            updateViewportAnchor: state.updateViewportAnchor,
-            openNewSessionDraft: state.openNewSessionDraft,
-            setCurrentSession: state.setCurrentSession,
-            newSessionDraft: state.newSessionDraft,
-        }))
+    // Session UI state
+    const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
+    const updateViewportAnchor = useSessionUIStore((s) => s.updateViewportAnchor);
+    const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
+    const setCurrentSession = useSessionUIStore((s) => s.setCurrentSession);
+    const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
+    const isSyncing = useSessionUIStore((s) => s.isSyncing);
+    const sessionMemoryStateMap = useSessionUIStore((s) => s.sessionMemoryState);
+
+    // Sync actions
+    const sync = useSync();
+    const loadMessages = React.useCallback(
+        (sessionId: string) => sync.syncSession(sessionId),
+        [sync],
+    );
+    const loadMoreMessages = React.useCallback(
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        (sessionId: string, _direction: 'up' | 'down') => sync.loadMore(sessionId),
+        [sync],
     );
 
-    const { isSyncing, messageStreamStates, sessionMemoryStateMap } = useSessionStore(
-        useShallow((state) => ({
-            isSyncing: state.isSyncing,
-            messageStreamStates: state.messageStreamStates,
-            sessionMemoryStateMap: state.sessionMemoryState,
-        }))
-    );
+    // UI store
+    const { isExpandedInput, stickyUserHeader, chatRenderMode } = useUIStore();
 
-    const {
-        isExpandedInput,
-        stickyUserHeader,
-        chatRenderMode,
-    } = useUIStore();
-
-    const sessionMessages = useSessionStore(
+    // Streaming state
+    const streamingMessageId = useStreamingStore(
         React.useCallback(
-            (state) => (currentSessionId ? state.messages.get(currentSessionId) ?? EMPTY_MESSAGES : EMPTY_MESSAGES),
-            [currentSessionId]
-        )
+            (s) => (currentSessionId ? s.streamingMessageIds.get(currentSessionId) ?? null : null),
+            [currentSessionId],
+        ),
+    );
+    const messageStreamStates = useStreamingStore((s) => s.messageStreamStates);
+
+    // Messages from sync system
+    const sessionMessageRecords = useSessionMessageRecords(currentSessionId ?? '');
+    const sessionMessages = currentSessionId ? sessionMessageRecords : EMPTY_MESSAGES;
+
+    // Sessions from sync system
+    const sessions = useSessions();
+
+    // Session status from sync system
+    const sessionStatusForCurrent = useSessionStatus(currentSessionId ?? '') ?? IDLE_SESSION_STATUS;
+
+    // Permissions & questions from sync system
+    const allPermissions = useDirectorySync(
+        React.useCallback((s) => s.permission ?? {}, []),
+    );
+    const allQuestions = useDirectorySync(
+        React.useCallback((s) => s.question ?? {}, []),
     );
 
-    const sessions = useSessionStore((state) => state.sessions);
+    // Convert Record → Map for blockingRequests helpers
+    const permissionsMap = React.useMemo(() => {
+        const m = new Map<string, PermissionRequest[]>();
+        for (const [k, v] of Object.entries(allPermissions)) m.set(k, v as PermissionRequest[]);
+        return m;
+    }, [allPermissions]);
 
-    const blockingRequestState = useSessionStore(
-        useShallow((state) => ({
-            sessions: state.sessions,
-            permissions: state.permissions,
-            questions: state.questions,
-        }))
-    );
+    const questionsMap = React.useMemo(() => {
+        const m = new Map<string, QuestionRequest[]>();
+        for (const [k, v] of Object.entries(allQuestions)) m.set(k, v as QuestionRequest[]);
+        return m;
+    }, [allQuestions]);
 
     const scopedSessionIds = React.useMemo(
         () => collectVisibleSessionIdsForBlockingRequests(
-            blockingRequestState.sessions.map((session) => ({ id: session.id, parentID: session.parentID })),
+            sessions.map((session) => ({ id: session.id, parentID: session.parentID })),
             currentSessionId,
         ),
-        [blockingRequestState.sessions, currentSessionId]
+        [sessions, currentSessionId],
     );
 
     const sessionPermissions = React.useMemo(() => {
         if (scopedSessionIds.length === 0) return EMPTY_PERMISSIONS;
-        return flattenBlockingRequests(blockingRequestState.permissions, scopedSessionIds);
-    }, [blockingRequestState.permissions, scopedSessionIds]);
+        return flattenBlockingRequests(permissionsMap, scopedSessionIds);
+    }, [permissionsMap, scopedSessionIds]);
 
     const sessionQuestions = React.useMemo(() => {
         if (scopedSessionIds.length === 0) return EMPTY_QUESTIONS;
-        return flattenBlockingRequests(blockingRequestState.questions, scopedSessionIds);
-    }, [blockingRequestState.questions, scopedSessionIds]);
+        return flattenBlockingRequests(questionsMap, scopedSessionIds);
+    }, [questionsMap, scopedSessionIds]);
 
-    const historyMeta = useSessionStore(
-        React.useCallback(
-            (state) => (currentSessionId ? state.sessionHistoryMeta.get(currentSessionId) ?? null : null),
-            [currentSessionId]
-        )
-    );
+    // History metadata — use sync's hasMore/isLoading
+    const historyMeta = React.useMemo(() => {
+        if (!currentSessionId) return null;
+        return {
+            limit: sessionMessages.length,
+            complete: !sync.hasMore(currentSessionId),
+            loading: sync.isLoading(currentSessionId),
+        };
+    }, [currentSessionId, sessionMessages.length, sync]);
 
-    const streamingMessageId = useSessionStore(
-        React.useCallback(
-            (state) => (currentSessionId ? state.streamingMessageIds.get(currentSessionId) ?? null : null),
-            [currentSessionId]
-        )
-    );
-
-    const sessionStatusForCurrent = useSessionStore(
-        React.useCallback(
-            (state) => (currentSessionId ? state.sessionStatus?.get(currentSessionId) ?? IDLE_SESSION_STATUS : IDLE_SESSION_STATUS),
-            [currentSessionId]
-        )
-    );
-
-    const hasSessionMessagesEntry = useSessionStore(
-        React.useCallback((state) => (currentSessionId ? state.messages.has(currentSessionId) : false), [currentSessionId])
-    );
+    const hasSessionMessagesEntry = sessionMessages.length > 0 || (currentSessionId ? sync.hasMore(currentSessionId) : false);
 
     const { isMobile } = useDeviceInfo();
     const draftOpen = Boolean(newSessionDraft?.open);
@@ -170,24 +180,16 @@ export const ChatContainer: React.FC = () => {
     const messageListRef = React.useRef<MessageListHandle | null>(null);
 
     const parentSession = React.useMemo(() => {
-        if (!currentSessionId) {
-            return null;
-        }
-
+        if (!currentSessionId) return null;
         const current = sessions.find((session) => session.id === currentSessionId);
         const parentID = current?.parentID;
-        if (!parentID) {
-            return null;
-        }
-
+        if (!parentID) return null;
         return sessions.find((session) => session.id === parentID) ?? null;
     }, [currentSessionId, sessions]);
 
     const handleReturnToParentSession = React.useCallback(() => {
-        if (!parentSession) {
-            return;
-        }
-        void setCurrentSession(parentSession.id);
+        if (!parentSession) return;
+        setCurrentSession(parentSession.id);
     }, [parentSession, setCurrentSession]);
 
     const returnToParentButton = parentSession ? (
@@ -242,9 +244,16 @@ export const ChatContainer: React.FC = () => {
         onActiveTurnChange: handleActiveTurnChange,
     });
 
+    // Deferred timeline staging — renders 1 message on first paint,
+    // adds 3 per rAF frame to avoid blocking.
+    const { stagedMessages } = useTimelineStaging({
+        sessionKey: currentSessionId ?? '',
+        messages: sessionMessages,
+    });
+
     const timelineController = useChatTimelineController({
         sessionId: currentSessionId,
-        messages: sessionMessages,
+        messages: stagedMessages,
         historyMeta,
         scrollRef,
         messageListRef,
@@ -269,16 +278,11 @@ export const ChatContainer: React.FC = () => {
     });
 
     React.useEffect(() => {
-        if (typeof window === 'undefined' || !currentSessionId) {
-            return;
-        }
+        if (typeof window === 'undefined' || !currentSessionId) return;
 
         const handleSessionReselected = (event: Event) => {
             const customEvent = event as CustomEvent<string>;
-            if (customEvent.detail !== currentSessionId) {
-                return;
-            }
-
+            if (customEvent.detail !== currentSessionId) return;
             resumeToBottomInstant();
         };
 
@@ -290,9 +294,7 @@ export const ChatContainer: React.FC = () => {
 
     React.useLayoutEffect(() => {
         const container = scrollRef.current;
-        if (!container) {
-            return;
-        }
+        if (!container) return;
 
         const updateChatScrollHeight = () => {
             container.style.setProperty('--chat-scroll-height', `${container.clientHeight}px`);
@@ -326,23 +328,15 @@ export const ChatContainer: React.FC = () => {
         };
     }, [currentSessionId, isDesktopExpandedInput, scrollRef]);
 
-    const hasHistoryMetadata = React.useMemo(() => {
-        return Boolean(historyMeta);
-    }, [historyMeta]);
+    const hasHistoryMetadata = Boolean(historyMeta);
 
     const isSessionHydrating =
         Boolean(currentSessionId)
         && (!hasSessionMessagesEntry || !hasHistoryMetadata || historyMeta?.loading === true);
 
     React.useEffect(() => {
-        if (!currentSessionId) {
-            return;
-        }
-
-        const hasSessionMessages = hasSessionMessagesEntry;
-        if (hasSessionMessages && hasHistoryMetadata) {
-            return;
-        }
+        if (!currentSessionId) return;
+        if (hasSessionMessagesEntry && hasHistoryMetadata) return;
 
         const load = async () => {
             await loadMessages(currentSessionId).finally(() => {

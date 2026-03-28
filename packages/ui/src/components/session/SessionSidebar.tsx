@@ -7,7 +7,8 @@ import { isDesktopLocalOriginActive, isDesktopShell, isTauriShell } from '@/lib/
 import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { formatDirectoryName, cn } from '@/lib/utils';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSessions, useDirectorySync, useAllSessionStatuses } from '@/sync/sync-context';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useUIStore } from '@/stores/useUIStore';
@@ -26,7 +27,6 @@ import { useProjectSessionSelection } from './sidebar/hooks/useProjectSessionSel
 import { useGroupOrdering } from './sidebar/hooks/useGroupOrdering';
 import { useSessionGrouping } from './sidebar/hooks/useSessionGrouping';
 import { useSessionSearchEffects } from './sidebar/hooks/useSessionSearchEffects';
-import { useSessionPrefetch } from './sidebar/hooks/useSessionPrefetch';
 import { useDirectoryStatusProbe } from './sidebar/hooks/useDirectoryStatusProbe';
 import { useSessionActions } from './sidebar/hooks/useSessionActions';
 import { useSidebarPersistence } from './sidebar/hooks/useSidebarPersistence';
@@ -44,6 +44,11 @@ import { SidebarFooter } from './sidebar/SidebarFooter';
 import { SidebarProjectsList } from './sidebar/SidebarProjectsList';
 import { SessionNodeItem } from './sidebar/SessionNodeItem';
 import { useUpdateStore } from '@/stores/useUpdateStore';
+import { opencodeClient } from '@/lib/opencode/client';
+import { listGlobalSessionPages } from '@/stores/globalSessions';
+import { listProjectWorktrees } from '@/lib/worktrees/worktreeManager';
+import { checkIsGitRepository } from '@/lib/gitApi';
+import type { WorktreeMetadata } from '@/types/worktree';
 import type { SortableDragHandleProps } from './sidebar/sortableItems';
 import {
   FolderDeleteConfirmDialog,
@@ -299,26 +304,149 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
   const gitDirectories = useGitStore((state) => state.directories);
 
-  const sessions = useSessionStore((state) => state.sessions);
-  const archivedSessions = useSessionStore((state) => state.archivedSessions);
-  const sessionsByDirectory = useSessionStore((state) => state.sessionsByDirectory);
-  const currentSessionId = useSessionStore((state) => state.currentSessionId);
-  const newSessionDraftOpen = useSessionStore((state) => Boolean(state.newSessionDraft?.open));
-  const setCurrentSession = useSessionStore((state) => state.setCurrentSession);
-  const loadMessages = useSessionStore((state) => state.loadMessages);
-  const updateSessionTitle = useSessionStore((state) => state.updateSessionTitle);
-  const shareSession = useSessionStore((state) => state.shareSession);
-  const unshareSession = useSessionStore((state) => state.unshareSession);
-  const sessionMemoryState = useSessionStore((state) => state.sessionMemoryState);
-  const sessionStatus = useSessionStore((state) => state.sessionStatus);
-  const sessionAttentionStates = useSessionStore((state) => state.sessionAttentionStates);
-  const permissions = useSessionStore((state) => state.permissions);
-  const worktreeMetadata = useSessionStore((state) => state.worktreeMetadata);
-  const availableWorktreesByProject = useSessionStore((state) => state.availableWorktreesByProject);
-  const getSessionsByDirectory = useSessionStore((state) => state.getSessionsByDirectory);
-  const openNewSessionDraft = useSessionStore((state) => state.openNewSessionDraft);
+  const syncSessions = useSessions();
+  const [globalActiveSessions, setGlobalActiveSessions] = React.useState<Session[]>([]);
+  const [archivedSessions, setArchivedSessions] = React.useState<Session[]>([]);
+  const [sessionsByDirectory, setSessionsByDirectory] = React.useState<Map<string, Session[]>>(new Map());
+  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+  const newSessionDraftOpen = useSessionUIStore((state) => Boolean(state.newSessionDraft?.open));
+  const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
+  const updateSessionTitle = useSessionUIStore((state) => state.updateSessionTitle);
+  const shareSession = useSessionUIStore((state) => state.shareSession);
+  const unshareSession = useSessionUIStore((state) => state.unshareSession);
+  const sessionMemoryState = useSessionUIStore((state) => state.sessionMemoryState);
+  const globalSessionStatuses = useAllSessionStatuses();
+  // sessionAttentionStates removed — now using notification-store directly in SessionNodeItem
+  const permissionsRecord = useDirectorySync((state) => state.permission);
+
+  const sessionStatus = React.useMemo(
+    () => new Map(Object.entries(globalSessionStatuses)),
+    [globalSessionStatuses],
+  );
+  const permissions = React.useMemo(
+    () => new Map(Object.entries(permissionsRecord)),
+    [permissionsRecord],
+  );
+  const worktreeMetadata = useSessionUIStore((state) => state.worktreeMetadata);
+  const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
+  const getSessionsByDirectory = useSessionUIStore((state) => state.getSessionsByDirectory);
+  const openNewSessionDraft = useSessionUIStore((state) => state.openNewSessionDraft);
   const prStatusEntries = useGitHubPrStatusStore((state) => state.entries);
   const updateStore = useUpdateStore();
+
+  const sessions = React.useMemo(
+    () => (globalActiveSessions.length > 0 ? globalActiveSessions : syncSessions),
+    [globalActiveSessions, syncSessions],
+  );
+
+  const syncSessionSignature = React.useMemo(
+    () => syncSessions
+      .map((session) => `${session.id}:${session.time?.updated ?? session.time?.created ?? 0}:${session.time?.archived ? 1 : 0}`)
+      .join('|'),
+    [syncSessions],
+  );
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const resolveDirectoryKey = (session: Session): string | null => {
+      const record = session as Session & {
+        directory?: string | null;
+        project?: { worktree?: string | null } | null;
+      };
+      return normalizePath(record.directory ?? null)
+        ?? normalizePath(record.project?.worktree ?? null);
+    };
+
+    const discoverWorktrees = async () => {
+      const projectEntries = useProjectsStore.getState().projects;
+      if (projectEntries.length === 0) return;
+
+      const worktreesByProject = new Map<string, WorktreeMetadata[]>();
+      const allWorktrees: WorktreeMetadata[] = [];
+
+      await Promise.all(
+        projectEntries.map(async (project) => {
+          const projectPath = normalizePath(project.path);
+          if (!projectPath) return;
+          try {
+            const isGitRepo = await checkIsGitRepository(projectPath);
+            if (!isGitRepo) return;
+            const worktrees = await listProjectWorktrees({ id: project.id, path: projectPath });
+            if (cancelled || worktrees.length === 0) return;
+            worktreesByProject.set(projectPath, worktrees);
+            allWorktrees.push(...worktrees);
+          } catch {
+            // ignore discovery errors
+          }
+        }),
+      );
+
+      if (cancelled) return;
+
+      useSessionUIStore.setState({
+        availableWorktrees: allWorktrees,
+        availableWorktreesByProject: worktreesByProject,
+      });
+    };
+
+    const loadGlobalSessions = async () => {
+      try {
+        const sdk = opencodeClient.getSdkClient();
+        const [active, archived] = await Promise.all([
+          listGlobalSessionPages(sdk, { archived: false, pageSize: 200 }),
+          listGlobalSessionPages(sdk, { archived: true, pageSize: 200 }),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        const nextByDirectory = new Map<string, Session[]>();
+        for (const session of active) {
+          const directory = resolveDirectoryKey(session);
+          if (!directory) {
+            continue;
+          }
+          const existing = nextByDirectory.get(directory) ?? [];
+          existing.push(session);
+          nextByDirectory.set(directory, existing);
+        }
+
+        setGlobalActiveSessions(active);
+        setArchivedSessions(archived);
+        setSessionsByDirectory(nextByDirectory);
+
+        // Discover worktrees for each project
+        discoverWorktrees();
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        console.warn('[SessionSidebar] Failed to load global session catalog, falling back to loaded sync sessions:', error);
+        const nextByDirectory = new Map<string, Session[]>();
+        for (const session of syncSessions) {
+          const directory = resolveDirectoryKey(session);
+          if (!directory) {
+            continue;
+          }
+          const existing = nextByDirectory.get(directory) ?? [];
+          existing.push(session);
+          nextByDirectory.set(directory, existing);
+        }
+        setGlobalActiveSessions(syncSessions);
+        setArchivedSessions([]);
+        setSessionsByDirectory(nextByDirectory);
+      }
+    };
+
+    void loadGlobalSessions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentDirectory, syncSessionSignature, syncSessions]);
 
   const tauriIpcAvailable = React.useMemo(() => isTauriShell(), []);
   const isDesktopShellRuntime = React.useMemo(() => isDesktopShell(), []);
@@ -614,10 +742,10 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     updateStore.available &&
     (updateStore.runtimeType === 'desktop' || updateStore.runtimeType === 'web');
 
-  const deleteSession = useSessionStore((state) => state.deleteSession);
-  const deleteSessions = useSessionStore((state) => state.deleteSessions);
-  const archiveSession = useSessionStore((state) => state.archiveSession);
-  const archiveSessions = useSessionStore((state) => state.archiveSessions);
+  const deleteSession = useSessionUIStore((state) => state.deleteSession);
+  const deleteSessions = useSessionUIStore((state) => state.deleteSessions);
+  const archiveSession = useSessionUIStore((state) => state.archiveSession);
+  const archiveSessions = useSessionUIStore((state) => state.archiveSessions);
 
   const {
     copiedSessionId,
@@ -820,7 +948,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     setProjectRootBranches,
   });
 
-  const isSessionsLoading = useSessionStore((state) => state.isLoading);
+  const isSessionsLoading = useSessionUIStore((state) => state.isLoading);
   useSessionFolderCleanup({
     isSessionsLoading,
     sessions,
@@ -1008,12 +1136,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     [activeNowEntries, sessions],
   );
 
-  useSessionPrefetch({
-    currentSessionId,
-    sortedSessions,
-    recentSessionIds: activeNowSessions.map((session) => session.id),
-    loadMessages,
-  });
+  // Session prefetch removed — sync bootstrap handles message loading.
 
   const activitySections = React.useMemo(() => {
     const toItem = (session: Session) => {
@@ -1105,7 +1228,6 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         expandedParents={expandedParents}
         hasSessionSearchQuery={hasSessionSearchQuery}
         normalizedSessionSearchQuery={normalizedSessionSearchQuery}
-        sessionAttentionStates={sessionAttentionStates as Map<string, { needsAttention?: boolean }>}
         notifyOnSubtasks={notifyOnSubtasks}
         sessionStatus={sessionStatus as Map<string, { type?: string }> | undefined}
         permissions={permissions as Map<string, unknown[]>}
@@ -1147,7 +1269,6 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
       expandedParents,
       hasSessionSearchQuery,
       normalizedSessionSearchQuery,
-      sessionAttentionStates,
       notifyOnSubtasks,
       sessionStatus,
       permissions,

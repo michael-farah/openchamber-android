@@ -1,7 +1,7 @@
 import React, { memo } from 'react';
 import { RiCloseLine, RiMessage2Line } from '@remixicon/react';
 import { useMessageQueueStore, type QueuedMessage } from '@/stores/messageQueueStore';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useFileStore } from '@/stores/fileStore';
 
 interface QueuedMessageChipProps {
@@ -67,7 +67,7 @@ interface QueuedMessageChipsProps {
 const EMPTY_QUEUE: QueuedMessage[] = [];
 
 export const QueuedMessageChips = memo(({ onEditMessage }: QueuedMessageChipsProps) => {
-    const currentSessionId = useSessionStore((state) => state.currentSessionId);
+    const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
     const queuedMessages = useMessageQueueStore(
         React.useCallback(
             (state) => {

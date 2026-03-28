@@ -1,0 +1,1218 @@
+/**
+ * Session UI Store — ephemeral UI state only.
+ *
+ * Domain data (sessions, messages, parts, permissions, questions, status)
+ * lives in sync child stores. This store owns ONLY transient UI concerns:
+ * current selection, draft state, viewport anchors, model/agent preferences,
+ * voice state, abort prompts, attached files, worktree metadata.
+ *
+ * SDK-calling actions that need domain data read it from sync-refs.
+ */
+
+import { create } from "zustand"
+import type { Session, Part, Message, TextPart, Agent } from "@opencode-ai/sdk/v2/client"
+import type { AttachedFile, SessionContextUsage } from "@/stores/types/sessionTypes"
+import type { WorktreeMetadata } from "@/types/worktree"
+import { opencodeClient } from "@/lib/opencode/client"
+import { useConfigStore } from "@/stores/useConfigStore"
+import { useProjectsStore } from "@/stores/useProjectsStore"
+import { useDirectoryStore } from "@/stores/useDirectoryStore"
+import { useSessionFoldersStore } from "@/stores/useSessionFoldersStore"
+import { getSafeStorage } from "@/stores/utils/safeStorage"
+import { markPendingUserSendAnimation } from "@/lib/userSendAnimation"
+import { flattenAssistantTextParts } from "@/lib/messages/messageText"
+import { EXECUTION_FORK_META_TEXT } from "@/lib/messages/executionMeta"
+import { waitForWorktreeBootstrap } from "@/lib/worktrees/worktreeBootstrap"
+import { waitForPendingDraftWorktreeRequest } from "@/lib/worktrees/pendingDraftWorktree"
+import type { ProjectEntry } from "@/lib/api/types"
+import {
+  getSyncSessions,
+  getAllSyncSessions,
+  getSyncMessages,
+  getSyncParts,
+  getDirectoryState,
+} from "./sync-refs"
+import { markSessionViewed } from "./notification-store"
+import { setActiveSession } from "./sync-context"
+
+export type { AttachedFile }
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export type SyntheticContextPart = {
+  text: string
+  attachments?: AttachedFile[]
+  synthetic?: boolean
+}
+
+export type NewSessionDraftState = {
+  open: boolean
+  selectedProjectId?: string | null
+  directoryOverride: string | null
+  pendingWorktreeRequestId?: string | null
+  bootstrapPendingDirectory?: string | null
+  preserveDirectoryOverride?: boolean
+  parentID: string | null
+  title?: string
+  initialPrompt?: string
+  syntheticParts?: SyntheticContextPart[]
+  targetFolderId?: string
+}
+
+export type ViewportAnchor = {
+  sessionId: string
+  value: number
+}
+
+export type SessionMemoryState = {
+  viewportAnchor: number
+  isStreaming: boolean
+  streamStartTime?: number
+  lastAccessedAt: number
+  backgroundMessageCount: number
+  loadedTurnCount?: number
+  hasMoreAbove?: boolean
+  streamingCooldownUntil?: number
+  isZombie?: boolean
+  lastUserMessageAt?: number
+}
+
+export type SessionHistoryMeta = {
+  limit: number
+  hasMore: boolean
+  complete: boolean
+  isLoading: boolean
+  loading?: boolean
+  nextCursor?: string
+}
+
+type VoiceStatus = "disconnected" | "connecting" | "connected" | "error"
+type VoiceMode = "idle" | "speaking" | "listening"
+
+export type SessionUIState = {
+  currentSessionId: string | null
+  attachedFiles: AttachedFile[]
+  sessionMemoryState: Map<string, SessionMemoryState>
+  newSessionDraft: NewSessionDraftState
+  voiceStatus: VoiceStatus
+  voiceMode: VoiceMode
+  abortPromptSessionId: string | null
+  abortPromptExpiresAt: number | null
+  pendingInputText: string | null
+  pendingInputMode: "replace" | "append" | "append-inline"
+  pendingSyntheticParts: SyntheticContextPart[] | null
+  sessionModelSelections: Map<string, { providerId: string; modelId: string }>
+  sessionAgentSelections: Map<string, string>
+  sessionAgentModelSelections: Map<string, Map<string, { providerId: string; modelId: string }>>
+  lastUsedProvider: { providerID: string; modelID: string } | null
+  isSyncing: boolean
+  error: string | null
+  worktreeMetadata: Map<string, WorktreeMetadata>
+  availableWorktrees: WorktreeMetadata[]
+  availableWorktreesByProject: Map<string, WorktreeMetadata[]>
+  webUICreatedSessions: Set<string>
+  sessionAbortFlags: Map<string, { timestamp: number; acknowledged: boolean }>
+  abortControllers: Map<string, AbortController>
+  isLoading: boolean
+  lastLoadedDirectory: string | null
+
+  // Actions — UI state management
+  setCurrentSession: (id: string | null) => void
+  addAttachedFile: (file: File) => Promise<void>
+  removeAttachedFile: (id: string) => void
+  clearAttachedFiles: () => void
+  updateViewportAnchor: (sessionId: string, anchor: number) => void
+  setVoiceStatus: (status: VoiceStatus) => void
+  setVoiceMode: (mode: VoiceMode) => void
+  setPendingInputText: (text: string | null, mode?: "replace" | "append" | "append-inline") => void
+  consumePendingInputText: () => { text: string; mode: "replace" | "append" | "append-inline" } | null
+  setPendingSyntheticParts: (parts: SyntheticContextPart[] | null) => void
+  consumePendingSyntheticParts: () => SyntheticContextPart[] | null
+  openNewSessionDraft: (options?: Partial<NewSessionDraftState>) => void
+  closeNewSessionDraft: () => void
+  setNewSessionDraftTarget: (target: { projectId?: string | null; selectedProjectId?: string | null; directoryOverride?: string | null }, options?: { force?: boolean }) => void
+  setDraftPreserveDirectoryOverride: (value: boolean) => void
+  saveSessionModelSelection: (sessionId: string, providerId: string, modelId: string) => void
+  getSessionModelSelection: (sessionId: string) => { providerId: string; modelId: string } | null
+  saveSessionAgentSelection: (sessionId: string, agentName: string) => void
+  getSessionAgentSelection: (sessionId: string) => string | null
+  saveAgentModelForSession: (sessionId: string, agentName: string, providerId: string, modelId: string) => void
+  getAgentModelForSession: (sessionId: string, agentName: string) => { providerId: string; modelId: string } | null
+  acknowledgeSessionAbort: (sessionId: string) => void
+  clearAbortPrompt: () => void
+  armAbortPrompt: (durationMs?: number) => number | null
+  clearError: () => void
+  markSessionAsOpenChamberCreated: (sessionId: string) => void
+  isOpenChamberCreatedSession: (sessionId: string) => boolean
+  getContextUsage: (contextLimit: number, outputLimit: number) => SessionContextUsage | null
+  initializeNewOpenChamberSession: (sessionId: string, agents: unknown[]) => void
+  setWorktreeMetadata: (sessionId: string, metadata: WorktreeMetadata | null) => void
+  overrideNewSessionDraftTarget: (options: Record<string, unknown>) => void
+  resolvePendingDraftWorktreeTarget: (requestId: string, directory: string | null, options?: Record<string, unknown>) => void
+  setDraftBootstrapPendingDirectory: (directory: string | null) => void
+  setPendingDraftWorktreeRequest: (requestId: string | null) => void
+  getWorktreeMetadata: (sessionId: string) => WorktreeMetadata | undefined
+
+  // Actions — SDK-calling operations (read domain data from sync-refs)
+  sendMessage: (
+    content: string,
+    providerID: string,
+    modelID: string,
+    agent?: string,
+    attachments?: AttachedFile[],
+    agentMentionName?: string,
+    additionalParts?: Array<{ text: string; attachments?: AttachedFile[]; synthetic?: boolean }>,
+    variant?: string,
+    inputMode?: "normal" | "shell",
+  ) => Promise<void>
+  createSession: (title?: string, directoryOverride?: string | null, parentID?: string | null) => Promise<Session | null>
+  deleteSession: (id: string, options?: Record<string, unknown>) => Promise<boolean>
+  deleteSessions: (ids: string[], options?: Record<string, unknown>) => Promise<{ deletedIds: string[]; failedIds: string[] }>
+  archiveSession: (id: string) => Promise<boolean>
+  archiveSessions: (ids: string[], options?: Record<string, unknown>) => Promise<{ archivedIds: string[]; failedIds: string[] }>
+  updateSessionTitle: (sessionId: string, title: string) => Promise<void>
+  shareSession: (sessionId: string) => Promise<Session | null>
+  unshareSession: (sessionId: string) => Promise<Session | null>
+  revertToMessage: (sessionId: string, messageId: string) => Promise<void>
+  forkFromMessage: (sessionId: string, messageId: string) => Promise<void>
+  handleSlashUndo: (sessionId: string) => Promise<void>
+  handleSlashRedo: (sessionId: string) => Promise<void>
+  createSessionFromAssistantMessage: (sourceMessageId: string) => Promise<void>
+
+  // Data access helpers (read from sync)
+  getSessionsByDirectory: (directory: string) => Session[]
+  getDirectoryForSession: (sessionId: string) => string | null
+  getLastMessageModel: (sessionId: string) => { providerID: string; modelID: string } | null
+  getCurrentAgent: (sessionId: string) => string | undefined
+  saveAgentModelVariantForSession: (sessionId: string, agentName: string, providerId: string, modelId: string, variant: string | undefined) => void
+  getAgentModelVariantForSession: (sessionId: string, agentName: string, providerId: string, modelId: string) => string | undefined
+  analyzeAndSaveExternalSessionChoices: (sessionId: string, agents: unknown[]) => Promise<Map<string, { timestamp: number; providerId: string; modelId: string }>>
+  debugSessionMessages: (sessionId: string) => Promise<void>
+  pollForTokenUpdates: () => void
+  setSessionDirectory: (sessionId: string, directory: string | null) => void
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const normalizePath = (value?: string | null): string | null => {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const replaced = trimmed.replace(/\\/g, "/")
+  if (replaced === "/") return "/"
+  return replaced.length > 1 ? replaced.replace(/\/+$/, "") : replaced
+}
+
+const resolveDirectoryKey = (session: Session): string | null => {
+  const sessionRecord = session as Session & {
+    directory?: string | null
+    project?: { worktree?: string | null } | null
+  }
+  return normalizePath(sessionRecord.directory ?? null)
+    ?? normalizePath(sessionRecord.project?.worktree ?? null)
+}
+
+const safeStorage = getSafeStorage()
+const DRAFT_TARGET_STORAGE_KEY = "oc.chatInput.lastDraftTarget"
+
+type PersistedDraftTarget = { projectId: string | null; directory: string | null }
+
+const readPersistedDraftTarget = (): PersistedDraftTarget | null => {
+  try {
+    const raw = safeStorage.getItem(DRAFT_TARGET_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { projectId?: unknown; directory?: unknown }
+    return {
+      projectId: typeof parsed?.projectId === "string" ? parsed.projectId : null,
+      directory: normalizePath(typeof parsed?.directory === "string" ? parsed.directory : null),
+    }
+  } catch {
+    return null
+  }
+}
+
+const persistDraftTarget = (target: PersistedDraftTarget): void => {
+  try {
+    safeStorage.setItem(DRAFT_TARGET_STORAGE_KEY, JSON.stringify(target))
+  } catch { /* ignored */ }
+}
+
+const resolveProjectForDirectory = (projects: ProjectEntry[], directory: string | null): ProjectEntry | null => {
+  const nd = normalizePath(directory)
+  if (!nd) return null
+  let best: ProjectEntry | null = null
+  for (const p of projects) {
+    const pp = normalizePath(p.path)
+    if (!pp) continue
+    if (nd !== pp && !nd.startsWith(`${pp}/`)) continue
+    if (!best || pp.length > (normalizePath(best.path)?.length ?? 0)) best = p
+  }
+  return best
+}
+
+const resolveProjectFromWorktreeDirectory = (
+  projects: ProjectEntry[],
+  availableWorktreesByProject: Map<string, WorktreeMetadata[]>,
+  directory: string | null,
+): ProjectEntry | null => {
+  const nd = normalizePath(directory)
+  if (!nd) return null
+  let matchedWorktree: WorktreeMetadata | null = null
+  let matchedProjectPath: string | null = null
+  let bestLen = -1
+  for (const [projectPath, worktrees] of availableWorktreesByProject.entries()) {
+    for (const wt of worktrees) {
+      const wp = normalizePath(wt.path)
+      if (!wp) continue
+      if (nd !== wp && !nd.startsWith(`${wp}/`)) continue
+      if (wp.length > bestLen) {
+        bestLen = wp.length
+        matchedWorktree = wt
+        matchedProjectPath = normalizePath(projectPath)
+      }
+    }
+  }
+  if (!matchedWorktree) return null
+  const candidates = [normalizePath(matchedWorktree.projectDirectory), matchedProjectPath].filter((v): v is string => Boolean(v))
+  for (const c of candidates) {
+    const exact = projects.find((p) => normalizePath(p.path) === c) ?? null
+    if (exact) return exact
+    const nested = resolveProjectForDirectory(projects, c)
+    if (nested) return nested
+  }
+  return null
+}
+
+const resolveDraftProjectForDirectory = (
+  projects: ProjectEntry[],
+  availableWorktreesByProject: Map<string, WorktreeMetadata[]>,
+  directory: string | null,
+): ProjectEntry | null =>
+  resolveProjectFromWorktreeDirectory(projects, availableWorktreesByProject, directory) ??
+  resolveProjectForDirectory(projects, directory)
+
+const resolveSessionDirectory = (
+  sessionId: string | null | undefined,
+  getWtMeta: (id: string) => WorktreeMetadata | undefined,
+): string | null => {
+  if (!sessionId) return null
+  const metaPath = getWtMeta(sessionId)?.path
+  if (typeof metaPath === "string" && metaPath.trim().length > 0) return normalizePath(metaPath)
+  const sessions = getAllSyncSessions()
+  const target = sessions.find((s) => s.id === sessionId)
+  if (!target) return null
+  return resolveDirectoryKey(target)
+}
+
+// Variant selections stored in-memory
+const agentModelVariantSelections = new Map<string, Map<string, Map<string, string>>>()
+
+const DEFAULT_DRAFT: NewSessionDraftState = {
+  open: false,
+  directoryOverride: null,
+  parentID: null,
+}
+
+// ---------------------------------------------------------------------------
+// Store
+// ---------------------------------------------------------------------------
+
+export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
+  currentSessionId: null,
+  attachedFiles: [],
+  sessionMemoryState: new Map(),
+  newSessionDraft: { ...DEFAULT_DRAFT },
+  voiceStatus: "disconnected",
+  voiceMode: "idle",
+  abortPromptSessionId: null,
+  abortPromptExpiresAt: null,
+  pendingInputText: null,
+  pendingInputMode: "replace",
+  pendingSyntheticParts: null,
+  sessionModelSelections: new Map(),
+  sessionAgentSelections: new Map(),
+  sessionAgentModelSelections: new Map(),
+  lastUsedProvider: null,
+  isSyncing: false,
+  error: null,
+  worktreeMetadata: new Map(),
+  availableWorktrees: [],
+  availableWorktreesByProject: new Map(),
+  webUICreatedSessions: new Set(),
+  sessionAbortFlags: new Map(),
+  abortControllers: new Map(),
+  isLoading: false,
+  lastLoadedDirectory: null,
+
+  // ---------------------------------------------------------------------------
+  // setCurrentSession
+  // ---------------------------------------------------------------------------
+  setCurrentSession: (id) => {
+    if (id) {
+      get().closeNewSessionDraft()
+    }
+
+    const previousSessionId = get().currentSessionId
+    const directoryState = useDirectoryStore.getState()
+
+    const sessionDir = resolveSessionDirectory(
+      id,
+      (sid) => get().worktreeMetadata.get(sid),
+    )
+    const fallbackDir = opencodeClient.getDirectory() ?? directoryState.currentDirectory ?? null
+    const resolvedDir = sessionDir ?? fallbackDir
+
+    try {
+      if (resolvedDir && directoryState.currentDirectory !== resolvedDir) {
+        directoryState.setDirectory(resolvedDir, { showOverlay: false })
+      }
+      opencodeClient.setDirectory(resolvedDir ?? undefined)
+    } catch (e) {
+      console.warn("Failed to set OpenCode directory for session switch:", e)
+    }
+
+    // Save viewport anchor for previous session
+    if (previousSessionId && previousSessionId !== id) {
+      const memState = get().sessionMemoryState.get(previousSessionId)
+      if (!memState?.isStreaming) {
+        const prevMessages = getSyncMessages(previousSessionId)
+        if (prevMessages.length > 0) {
+          get().updateViewportAnchor(previousSessionId, prevMessages.length - 1)
+        }
+      }
+    }
+
+    set({ currentSessionId: id })
+
+    // Mark session viewed in notification store + update active session ref
+    // Mark session viewed in notification store + update active session ref
+    if (id) {
+      markSessionViewed(id)
+      setActiveSession(resolvedDir ?? "", id)
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Attached files
+  // ---------------------------------------------------------------------------
+  addAttachedFile: async (file: File) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const dataUrl = await new Promise<string>((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.readAsDataURL(file)
+    })
+    const attached: AttachedFile = {
+      id,
+      file,
+      dataUrl,
+      mimeType: file.type,
+      filename: file.name,
+      size: file.size,
+      source: "local",
+    }
+    set((s) => ({ attachedFiles: [...s.attachedFiles, attached] }))
+  },
+
+  removeAttachedFile: (id) =>
+    set((s) => ({ attachedFiles: s.attachedFiles.filter((f) => f.id !== id) })),
+
+  clearAttachedFiles: () => set({ attachedFiles: [] }),
+
+  updateViewportAnchor: (sessionId, anchor) =>
+    set((s) => {
+      const map = new Map(s.sessionMemoryState)
+      const existing = map.get(sessionId) ?? {
+        viewportAnchor: 0,
+        isStreaming: false,
+        lastAccessedAt: Date.now(),
+        backgroundMessageCount: 0,
+      }
+      map.set(sessionId, { ...existing, viewportAnchor: anchor, lastAccessedAt: Date.now() })
+      return { sessionMemoryState: map }
+    }),
+
+  setVoiceStatus: (status) => set({ voiceStatus: status }),
+  setVoiceMode: (mode) => set({ voiceMode: mode }),
+
+  setPendingInputText: (text, mode = "replace") =>
+    set({ pendingInputText: text, pendingInputMode: mode }),
+
+  consumePendingInputText: () => {
+    const { pendingInputText, pendingInputMode } = get()
+    if (pendingInputText === null) return null
+    set({ pendingInputText: null, pendingInputMode: "replace" })
+    return { text: pendingInputText, mode: pendingInputMode }
+  },
+
+  setPendingSyntheticParts: (parts) => set({ pendingSyntheticParts: parts }),
+
+  consumePendingSyntheticParts: () => {
+    const { pendingSyntheticParts } = get()
+    if (pendingSyntheticParts !== null) {
+      set({ pendingSyntheticParts: null })
+    }
+    return pendingSyntheticParts
+  },
+
+  // ---------------------------------------------------------------------------
+  // openNewSessionDraft
+  // ---------------------------------------------------------------------------
+  openNewSessionDraft: (options) => {
+    const projectsState = useProjectsStore.getState()
+    const projects = projectsState.projects
+    const availableWorktreesByProject = get().availableWorktreesByProject
+    const activeProject = projectsState.getActiveProject()
+    const currentDirectory = normalizePath(useDirectoryStore.getState().currentDirectory ?? null)
+    const persistedTarget = readPersistedDraftTarget()
+
+    const explicitDirectory = options?.directoryOverride !== undefined
+      ? normalizePath(options.directoryOverride)
+      : null
+    const explicitProject = options?.selectedProjectId
+      ? projects.find((p) => p.id === options.selectedProjectId) ?? null
+      : null
+
+    const inferredProjectFromDir = resolveDraftProjectForDirectory(projects, availableWorktreesByProject, explicitDirectory)
+    const fallbackProject = (() => {
+      if (activeProject) return activeProject
+      if (projectsState.activeProjectId) return projects.find((p) => p.id === projectsState.activeProjectId) ?? null
+      return projects[0] ?? null
+    })()
+
+    const persistedProjectById = persistedTarget?.projectId
+      ? projects.find((p) => p.id === persistedTarget.projectId) ?? null
+      : null
+    const persistedProjectByDir = resolveDraftProjectForDirectory(projects, availableWorktreesByProject, persistedTarget?.directory ?? null)
+    const currentDirProject = resolveDraftProjectForDirectory(projects, availableWorktreesByProject, currentDirectory)
+
+    const selectedProject = (() => {
+      if (explicitProject || explicitDirectory !== null) {
+        return explicitProject ?? inferredProjectFromDir ?? fallbackProject
+      }
+      if (currentDirectory) return currentDirProject ?? fallbackProject
+      return persistedProjectByDir ?? persistedProjectById ?? fallbackProject
+    })()
+
+    const directory = (() => {
+      if (explicitDirectory !== null) return explicitDirectory
+      if (explicitProject) return normalizePath(explicitProject.path ?? null)
+      if (currentDirectory) return currentDirectory
+      if (persistedTarget?.directory) return persistedTarget.directory
+      return normalizePath(selectedProject?.path ?? null)
+    })()
+
+    persistDraftTarget({ projectId: selectedProject?.id ?? null, directory })
+
+    set({
+      newSessionDraft: {
+        open: true,
+        selectedProjectId: selectedProject?.id ?? null,
+        directoryOverride: directory,
+        pendingWorktreeRequestId: options?.pendingWorktreeRequestId ?? null,
+        bootstrapPendingDirectory: normalizePath(options?.bootstrapPendingDirectory ?? null),
+        preserveDirectoryOverride: options?.preserveDirectoryOverride === true,
+        parentID: options?.parentID ?? null,
+        title: options?.title,
+        initialPrompt: options?.initialPrompt,
+        syntheticParts: options?.syntheticParts,
+        targetFolderId: options?.targetFolderId,
+      },
+      currentSessionId: null,
+      error: null,
+      ...(options?.initialPrompt ? { pendingInputText: options.initialPrompt, pendingInputMode: "replace" as const } : {}),
+    })
+
+    try {
+      const configState = useConfigStore.getState()
+      const visibleAgents = configState.getVisibleAgents()
+      let agentName: string | undefined
+      if (configState.settingsDefaultAgent) {
+        const settingsAgent = visibleAgents.find((a: Agent) => a.name === configState.settingsDefaultAgent)
+        if (settingsAgent) agentName = settingsAgent.name
+      }
+      if (!agentName) {
+        agentName = visibleAgents.find((a: Agent) => a.name === "build")?.name || visibleAgents[0]?.name
+      }
+      if (agentName) configState.setAgent(agentName)
+    } catch { /* ignored */ }
+  },
+
+  // ---------------------------------------------------------------------------
+  // closeNewSessionDraft
+  // ---------------------------------------------------------------------------
+  closeNewSessionDraft: () => {
+    set({
+      newSessionDraft: {
+        open: false,
+        selectedProjectId: null,
+        directoryOverride: null,
+        pendingWorktreeRequestId: null,
+        bootstrapPendingDirectory: null,
+        preserveDirectoryOverride: false,
+        parentID: null,
+        title: undefined,
+        initialPrompt: undefined,
+        syntheticParts: undefined,
+        targetFolderId: undefined,
+      },
+    })
+  },
+
+  setNewSessionDraftTarget: (target) =>
+    set((s) => ({
+      newSessionDraft: {
+        ...s.newSessionDraft,
+        selectedProjectId: target.projectId ?? target.selectedProjectId ?? s.newSessionDraft.selectedProjectId,
+        directoryOverride: target.directoryOverride ?? s.newSessionDraft.directoryOverride,
+      },
+    })),
+
+  setDraftPreserveDirectoryOverride: (value) =>
+    set((s) => {
+      if (!s.newSessionDraft?.open) return s
+      return { newSessionDraft: { ...s.newSessionDraft, preserveDirectoryOverride: value } }
+    }),
+
+  saveSessionModelSelection: (sessionId, providerId, modelId) =>
+    set((s) => {
+      const map = new Map(s.sessionModelSelections)
+      map.set(sessionId, { providerId, modelId })
+      return { sessionModelSelections: map, lastUsedProvider: { providerID: providerId, modelID: modelId } }
+    }),
+
+  getSessionModelSelection: (sessionId) => get().sessionModelSelections.get(sessionId) ?? null,
+
+  saveSessionAgentSelection: (sessionId, agentName) =>
+    set((s) => {
+      if (s.sessionAgentSelections.get(sessionId) === agentName) {
+        return s
+      }
+      const map = new Map(s.sessionAgentSelections)
+      map.set(sessionId, agentName)
+      return { sessionAgentSelections: map }
+    }),
+
+  getSessionAgentSelection: (sessionId) => get().sessionAgentSelections.get(sessionId) ?? null,
+
+  saveAgentModelForSession: (sessionId, agentName, providerId, modelId) =>
+    set((s) => {
+      const existing = s.sessionAgentModelSelections.get(sessionId)?.get(agentName)
+      if (existing?.providerId === providerId && existing?.modelId === modelId) {
+        return s
+      }
+      const outer = new Map(s.sessionAgentModelSelections)
+      const inner = new Map(outer.get(sessionId) ?? new Map())
+      inner.set(agentName, { providerId, modelId })
+      outer.set(sessionId, inner)
+      return { sessionAgentModelSelections: outer }
+    }),
+
+  getAgentModelForSession: (sessionId, agentName) =>
+    get().sessionAgentModelSelections.get(sessionId)?.get(agentName) ?? null,
+
+  acknowledgeSessionAbort: (sessionId) =>
+    set((s) => {
+      const flags = new Map(s.sessionAbortFlags)
+      const existing = flags.get(sessionId)
+      if (existing) flags.set(sessionId, { ...existing, acknowledged: true })
+      return { sessionAbortFlags: flags }
+    }),
+
+  clearAbortPrompt: () => set({ abortPromptSessionId: null, abortPromptExpiresAt: null }),
+
+  armAbortPrompt: (durationMs = 5000) => {
+    const { currentSessionId } = get()
+    if (!currentSessionId) return null
+    const expiresAt = Date.now() + durationMs
+    set({ abortPromptSessionId: currentSessionId, abortPromptExpiresAt: expiresAt })
+    return expiresAt
+  },
+
+  clearError: () => set({ error: null }),
+
+  markSessionAsOpenChamberCreated: (sessionId) =>
+    set((s) => {
+      const next = new Set(s.webUICreatedSessions)
+      next.add(sessionId)
+      return { webUICreatedSessions: next }
+    }),
+
+  isOpenChamberCreatedSession: (sessionId) => get().webUICreatedSessions.has(sessionId),
+
+  getContextUsage: () => {
+    if (get().newSessionDraft?.open) return null
+    const sessionId = get().currentSessionId
+    if (!sessionId) return null
+    return null
+  },
+
+  initializeNewOpenChamberSession: () => {
+    // Stub — was a no-op in old store
+  },
+
+  setWorktreeMetadata: (sessionId, metadata) =>
+    set((s) => {
+      const map = new Map(s.worktreeMetadata)
+      if (metadata) map.set(sessionId, metadata)
+      else map.delete(sessionId)
+      return { worktreeMetadata: map }
+    }),
+
+  overrideNewSessionDraftTarget: (options) =>
+    set((s) => ({
+      newSessionDraft: { ...s.newSessionDraft, ...options },
+    })),
+
+  resolvePendingDraftWorktreeTarget: (requestId, directory, options) =>
+    set((s) => {
+      if (!s.newSessionDraft?.open || s.newSessionDraft.pendingWorktreeRequestId !== requestId) return s
+      return {
+        newSessionDraft: {
+          ...s.newSessionDraft,
+          selectedProjectId: (options as Record<string, unknown> | undefined)?.projectId as string ?? s.newSessionDraft.selectedProjectId ?? null,
+          directoryOverride: normalizePath(directory),
+          pendingWorktreeRequestId: null,
+          bootstrapPendingDirectory: normalizePath((options as Record<string, unknown> | undefined)?.bootstrapPendingDirectory as string ?? s.newSessionDraft.bootstrapPendingDirectory ?? null),
+          preserveDirectoryOverride: ((options as Record<string, unknown> | undefined)?.preserveDirectoryOverride ?? true) as boolean,
+        },
+      }
+    }),
+
+  setDraftBootstrapPendingDirectory: (directory) =>
+    set((s) => {
+      if (!s.newSessionDraft?.open) return s
+      return { newSessionDraft: { ...s.newSessionDraft, bootstrapPendingDirectory: normalizePath(directory) } }
+    }),
+
+  setPendingDraftWorktreeRequest: (requestId) =>
+    set((s) => {
+      if (!s.newSessionDraft?.open) return s
+      return { newSessionDraft: { ...s.newSessionDraft, pendingWorktreeRequestId: requestId } }
+    }),
+
+  getWorktreeMetadata: (sessionId) => get().worktreeMetadata.get(sessionId),
+
+  // ---------------------------------------------------------------------------
+  // sendMessage — calls SDK, reads domain data from sync
+  // ---------------------------------------------------------------------------
+  sendMessage: async (
+    content: string,
+    providerID: string,
+    modelID: string,
+    agent?: string,
+    attachments?: AttachedFile[],
+    agentMentionName?: string,
+    additionalParts?: Array<{ text: string; attachments?: AttachedFile[]; synthetic?: boolean }>,
+    variant?: string,
+  ) => {
+    const draft = get().newSessionDraft
+    const trimmedAgent = typeof agent === "string" && agent.trim().length > 0 ? agent.trim() : undefined
+
+    // ---- New session from draft ----
+    if (draft?.open) {
+      const draftTargetFolderId = draft.targetFolderId
+      let draftDirectoryOverride = draft.bootstrapPendingDirectory ?? draft.directoryOverride ?? null
+      const draftProjectId = draft.selectedProjectId ?? null
+
+      if (draft.pendingWorktreeRequestId) {
+        draftDirectoryOverride = await waitForPendingDraftWorktreeRequest(draft.pendingWorktreeRequestId)
+        get().resolvePendingDraftWorktreeTarget(draft.pendingWorktreeRequestId, draftDirectoryOverride)
+      }
+
+      const created = await get().createSession(draft.title, draftDirectoryOverride, draft.parentID ?? null)
+      if (!created?.id) throw new Error("Failed to create session")
+
+      persistDraftTarget({
+        projectId: draftProjectId,
+        directory: normalizePath(draftDirectoryOverride ?? created.directory ?? null),
+      })
+
+      const configState = useConfigStore.getState()
+      const draftAgentName = configState.currentAgentName
+      const effectiveDraftAgent = trimmedAgent ?? draftAgentName
+
+      if (configState.currentProviderId && configState.currentModelId) {
+        get().saveSessionModelSelection(created.id, configState.currentProviderId, configState.currentModelId)
+      }
+
+      if (effectiveDraftAgent) {
+        get().saveSessionAgentSelection(created.id, effectiveDraftAgent)
+        if (configState.currentProviderId && configState.currentModelId) {
+          get().saveAgentModelForSession(created.id, effectiveDraftAgent, configState.currentProviderId, configState.currentModelId)
+          get().saveAgentModelVariantForSession(created.id, effectiveDraftAgent, configState.currentProviderId, configState.currentModelId, variant)
+        }
+      }
+
+      get().initializeNewOpenChamberSession(created.id, configState.agents ?? [])
+
+      const draftSyntheticParts = draft.syntheticParts
+
+      get().closeNewSessionDraft()
+      get().setCurrentSession(created.id)
+
+      if (draftTargetFolderId) {
+        const scopeKey = draftDirectoryOverride || created.directory || null
+        if (scopeKey) {
+          useSessionFoldersStore.getState().addSessionToFolder(scopeKey, draftTargetFolderId, created.id)
+        }
+      }
+
+      const mergedAdditionalParts = draftSyntheticParts?.length
+        ? [...(additionalParts || []), ...draftSyntheticParts]
+        : additionalParts
+
+      const createdDirectory = normalizePath(draftDirectoryOverride ?? created.directory ?? null)
+      if (createdDirectory) {
+        await waitForWorktreeBootstrap(createdDirectory)
+      }
+
+      markPendingUserSendAnimation(created.id)
+
+      const files = attachments?.map((a) => ({
+        type: "file" as const,
+        mime: a.mimeType,
+        url: a.dataUrl,
+        filename: a.filename,
+      }))
+
+      await opencodeClient.sendMessage({
+        id: created.id,
+        providerID,
+        modelID,
+        text: content,
+        agent: effectiveDraftAgent,
+        variant,
+        files,
+        additionalParts: mergedAdditionalParts?.map((p) => ({
+          text: p.text,
+          synthetic: p.synthetic,
+          files: p.attachments?.map((a) => ({
+            type: "file" as const,
+            mime: a.mimeType,
+            url: a.dataUrl,
+            filename: a.filename,
+          })),
+        })),
+      })
+      return
+    }
+
+    // ---- Existing session ----
+    const currentSessionId = get().currentSessionId
+    const sessionAgentSelection = currentSessionId
+      ? get().getSessionAgentSelection(currentSessionId)
+      : null
+    const configAgentName = useConfigStore.getState().currentAgentName
+    const effectiveAgent = trimmedAgent || sessionAgentSelection || configAgentName || undefined
+
+    if (currentSessionId && effectiveAgent) {
+      get().saveSessionAgentSelection(currentSessionId, effectiveAgent)
+      get().saveAgentModelVariantForSession(currentSessionId, effectiveAgent, providerID, modelID, variant)
+    }
+
+    if (currentSessionId) {
+      const memState = get().sessionMemoryState.get(currentSessionId)
+      if (!memState || !memState.lastUserMessageAt) {
+        const newMemState = new Map(get().sessionMemoryState)
+        newMemState.set(currentSessionId, {
+          viewportAnchor: memState?.viewportAnchor ?? 0,
+          isStreaming: memState?.isStreaming ?? false,
+          lastAccessedAt: Date.now(),
+          backgroundMessageCount: memState?.backgroundMessageCount ?? 0,
+          lastUserMessageAt: Date.now(),
+        })
+        set({ sessionMemoryState: newMemState })
+      }
+    }
+
+    const currentSessionDirectory = currentSessionId
+      ? normalizePath(get().getDirectoryForSession(currentSessionId))
+      : null
+    if (currentSessionDirectory) {
+      await waitForWorktreeBootstrap(currentSessionDirectory)
+    }
+
+    if (currentSessionId) {
+      fetch(`/api/sessions/${currentSessionId}/message-sent`, { method: "POST" })
+        .catch(() => { /* ignore */ })
+    }
+
+    if (currentSessionId) {
+      markPendingUserSendAnimation(currentSessionId)
+    }
+
+    const files = attachments?.map((a) => ({
+      type: "file" as const,
+      mime: a.mimeType,
+      url: a.dataUrl,
+      filename: a.filename,
+    }))
+
+    await opencodeClient.sendMessage({
+      id: currentSessionId || "",
+      providerID,
+      modelID,
+      text: content,
+      agent: effectiveAgent,
+      variant,
+      files,
+      additionalParts: additionalParts?.map((p) => ({
+        text: p.text,
+        synthetic: p.synthetic,
+        files: p.attachments?.map((a) => ({
+          type: "file" as const,
+          mime: a.mimeType,
+          url: a.dataUrl,
+          filename: a.filename,
+        })),
+      })),
+    })
+  },
+
+  // ---------------------------------------------------------------------------
+  // createSession
+  // ---------------------------------------------------------------------------
+  createSession: async (title, directoryOverride, parentID) => {
+    const draft = get().newSessionDraft
+    const targetFolderId = draft.targetFolderId
+    get().closeNewSessionDraft()
+
+    try {
+      const sdk = opencodeClient.getSdkClient()
+      const dir = directoryOverride ?? opencodeClient.getDirectory()
+      const result = await sdk.session.create({
+        directory: dir,
+        title,
+        parentID: parentID ?? undefined,
+      })
+      const session = result.data
+      if (!session) return null
+
+      get().markSessionAsOpenChamberCreated(session.id)
+      get().setCurrentSession(session.id)
+
+      if (targetFolderId) {
+        const scopeKey = directoryOverride || get().lastLoadedDirectory || session.directory
+        if (scopeKey) {
+          useSessionFoldersStore.getState().addSessionToFolder(scopeKey, targetFolderId, session.id)
+        }
+      }
+
+      return session
+    } catch (e) {
+      console.error("[session-ui-store] createSession failed", e)
+      return null
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // deleteSession — calls SDK, SSE event updates child store
+  // ---------------------------------------------------------------------------
+  deleteSession: async (id) => {
+    try {
+      const sdk = opencodeClient.getSdkClient()
+      await sdk.session.delete({ sessionID: id })
+      if (get().currentSessionId === id) {
+        set({ currentSessionId: null })
+      }
+      return true
+    } catch (e) {
+      console.error("[session-ui-store] deleteSession failed", e)
+      return false
+    }
+  },
+
+  deleteSessions: async (ids) => {
+    const deletedIds: string[] = []
+    const failedIds: string[] = []
+    for (const id of ids) {
+      const ok = await get().deleteSession(id)
+      if (ok) deletedIds.push(id)
+      else failedIds.push(id)
+    }
+    return { deletedIds, failedIds }
+  },
+
+  // ---------------------------------------------------------------------------
+  // archiveSession — calls SDK, SSE event updates child store
+  // ---------------------------------------------------------------------------
+  archiveSession: async (id) => {
+    try {
+      const sdk = opencodeClient.getSdkClient()
+      await sdk.session.update({ sessionID: id, time: { archived: Date.now() } })
+      if (get().currentSessionId === id) {
+        set({ currentSessionId: null })
+      }
+      return true
+    } catch (e) {
+      console.error("[session-ui-store] archiveSession failed", e)
+      return false
+    }
+  },
+
+  archiveSessions: async (ids) => {
+    const archivedIds: string[] = []
+    const failedIds: string[] = []
+    for (const id of ids) {
+      const ok = await get().archiveSession(id)
+      if (ok) archivedIds.push(id)
+      else failedIds.push(id)
+    }
+    return { archivedIds, failedIds }
+  },
+
+  // ---------------------------------------------------------------------------
+  // updateSessionTitle — calls SDK, SSE event updates child store
+  // ---------------------------------------------------------------------------
+  updateSessionTitle: async (sessionId, title) => {
+    const sdk = opencodeClient.getSdkClient()
+    await sdk.session.update({ sessionID: sessionId, title })
+  },
+
+  shareSession: async (sessionId) => {
+    const sdk = opencodeClient.getSdkClient()
+    const result = await sdk.session.share({ sessionID: sessionId })
+    return result.data ?? null
+  },
+
+  unshareSession: async (sessionId) => {
+    const sdk = opencodeClient.getSdkClient()
+    const result = await sdk.session.unshare({ sessionID: sessionId })
+    return result.data ?? null
+  },
+
+  // ---------------------------------------------------------------------------
+  // revertToMessage — delegates to session-actions (single implementation)
+  // ---------------------------------------------------------------------------
+  revertToMessage: async (sessionId, messageId) => {
+    const { revertToMessage: revert } = await import("./session-actions")
+    await revert(sessionId, messageId)
+  },
+
+  // ---------------------------------------------------------------------------
+  // handleSlashUndo — reads from sync
+  // ---------------------------------------------------------------------------
+  handleSlashUndo: async (sessionId) => {
+    const messages = getSyncMessages(sessionId)
+    const sessions = getSyncSessions()
+    const currentSession = sessions.find((s) => s.id === sessionId)
+
+    const userMessages = messages.filter((m) => m.role === "user")
+    if (userMessages.length === 0) return
+
+    const revertToId = currentSession?.revert?.messageID
+    let targetMessage: typeof messages[number] | undefined
+    if (revertToId) {
+      const revertIndex = userMessages.findIndex((m) => m.id === revertToId)
+      targetMessage = userMessages[revertIndex + 1]
+    } else {
+      targetMessage = userMessages[userMessages.length - 1]
+    }
+
+    if (!targetMessage) return
+
+    const targetParts = getSyncParts(targetMessage.id)
+    const textPart = targetParts.find((p: Part) => p.type === "text") as TextPart | undefined
+    const preview = textPart?.text
+      ? String(textPart.text).slice(0, 50) + (textPart.text.length > 50 ? "..." : "")
+      : "[No text]"
+
+    await get().revertToMessage(sessionId, targetMessage.id)
+
+    const { toast } = await import("sonner")
+    toast.success(`Undid to: ${preview}`)
+  },
+
+  // ---------------------------------------------------------------------------
+  // handleSlashRedo — reads from sync
+  // ---------------------------------------------------------------------------
+  handleSlashRedo: async (sessionId) => {
+    const sessions = getSyncSessions()
+    const currentSession = sessions.find((s) => s.id === sessionId)
+    const revertToId = currentSession?.revert?.messageID
+    if (!revertToId) return
+
+    const messages = getSyncMessages(sessionId)
+    const userMessages = messages.filter((m) => m.role === "user")
+    const revertIndex = userMessages.findIndex((m) => m.id === revertToId)
+    const targetMessage = userMessages[revertIndex - 1]
+
+    if (targetMessage) {
+      const targetParts = getSyncParts(targetMessage.id)
+      const textPart = targetParts.find((p: Part) => p.type === "text") as TextPart | undefined
+      const preview = textPart?.text
+        ? String(textPart.text).slice(0, 50) + (textPart.text.length > 50 ? "..." : "")
+        : "[No text]"
+
+      await get().revertToMessage(sessionId, targetMessage.id)
+
+      const { toast } = await import("sonner")
+      toast.success(`Redid to: ${preview}`)
+    } else {
+      // Full unrevert
+      const { unrevertSession } = await import("./session-actions")
+      await unrevertSession(sessionId)
+
+      const { toast } = await import("sonner")
+      toast.success("Restored all messages")
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // forkFromMessage — delegates to session-actions (handles text + sidebar)
+  // ---------------------------------------------------------------------------
+  forkFromMessage: async (sessionId, messageId) => {
+    const sessions = getSyncSessions()
+    const existingSession = sessions.find((s) => s.id === sessionId)
+    if (!existingSession) return
+
+    try {
+      const { forkFromMessage: fork } = await import("./session-actions")
+      await fork(sessionId, messageId)
+
+      const { toast } = await import("sonner")
+      toast.success(`Forked from ${existingSession.title}`)
+    } catch (error) {
+      console.error("Failed to fork session:", error)
+      const { toast } = await import("sonner")
+      toast.error("Failed to fork session")
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // createSessionFromAssistantMessage — reads from sync
+  // ---------------------------------------------------------------------------
+  createSessionFromAssistantMessage: async (sourceMessageId) => {
+    if (!sourceMessageId) return
+
+    // Find which session this message belongs to by scanning sync state
+    const state = getDirectoryState()
+    if (!state) return
+
+    let sourceSessionId: string | undefined
+    let sourceMessage: Message | undefined
+
+    for (const [sid, msgs] of Object.entries(state.message)) {
+      const found = msgs.find((m) => m.id === sourceMessageId)
+      if (found) {
+        sourceSessionId = sid
+        sourceMessage = found
+        break
+      }
+    }
+
+    if (!sourceMessage || sourceMessage.role !== "assistant") return
+
+    const sourceParts = getSyncParts(sourceMessageId)
+    const assistantPlanText = flattenAssistantTextParts(sourceParts)
+    if (!assistantPlanText.trim()) return
+
+    const directory = resolveSessionDirectory(
+      sourceSessionId ?? null,
+      (sid) => get().worktreeMetadata.get(sid),
+    )
+
+    const session = await get().createSession(undefined, directory ?? null, null)
+    if (!session) return
+
+    const { currentProviderId, currentModelId, currentAgentName } = useConfigStore.getState()
+    const pID = currentProviderId || get().lastUsedProvider?.providerID
+    const mID = currentModelId || get().lastUsedProvider?.modelID
+
+    if (!pID || !mID) return
+
+    await opencodeClient.sendMessage({
+      id: session.id,
+      providerID: pID,
+      modelID: mID,
+      text: assistantPlanText,
+      prefaceText: EXECUTION_FORK_META_TEXT,
+      agent: currentAgentName ?? undefined,
+    })
+  },
+
+  // ---------------------------------------------------------------------------
+  // Data access helpers — read from sync
+  // ---------------------------------------------------------------------------
+  getSessionsByDirectory: (directory) => {
+    const nd = normalizePath(directory)
+    if (!nd) return []
+    const sessions = getAllSyncSessions()
+    return sessions.filter((s) => resolveDirectoryKey(s) === nd)
+  },
+
+  getDirectoryForSession: (sessionId) => {
+    const sessions = getAllSyncSessions()
+    const session = sessions.find((s) => s.id === sessionId)
+    if (!session) return null
+    return resolveDirectoryKey(session)
+  },
+
+  getLastMessageModel: (sessionId) => {
+    const msgs = getSyncMessages(sessionId)
+    if (msgs.length === 0) return null
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m?.role === "assistant") {
+        if (m.providerID || m.modelID) {
+          return { providerID: m.providerID, modelID: m.modelID }
+        }
+      }
+    }
+    return null
+  },
+
+  getCurrentAgent: (sessionId) => {
+    return get().sessionAgentSelections.get(sessionId) ?? undefined
+  },
+
+  saveAgentModelVariantForSession: (sessionId: string, agentName: string, providerId: string, modelId: string, variant: string | undefined) => {
+    if (!variant) return
+    let sessionMap = agentModelVariantSelections.get(sessionId)
+    if (!sessionMap) {
+      sessionMap = new Map()
+      agentModelVariantSelections.set(sessionId, sessionMap)
+    }
+    let agentMap = sessionMap.get(agentName)
+    if (!agentMap) {
+      agentMap = new Map()
+      sessionMap.set(agentName, agentMap)
+    }
+    agentMap.set(`${providerId}/${modelId}`, variant)
+  },
+
+  getAgentModelVariantForSession: (sessionId: string, agentName: string, providerId: string, modelId: string) => {
+    return agentModelVariantSelections.get(sessionId)?.get(agentName)?.get(`${providerId}/${modelId}`)
+  },
+
+  analyzeAndSaveExternalSessionChoices: async () => new Map(),
+
+  debugSessionMessages: async (sessionId) => {
+    const msgs = getSyncMessages(sessionId)
+    const sessions = getSyncSessions()
+    const session = sessions.find((s) => s.id === sessionId)
+    console.log(`Debug session ${sessionId}:`, {
+      session,
+      messageCount: msgs.length,
+      messages: msgs.map((m) => ({
+        id: m.id,
+        role: m.role,
+        tokens: m.role === "assistant" ? m.tokens : undefined,
+      })),
+    })
+  },
+
+  pollForTokenUpdates: () => {
+    // Handled by sync system's SSE stream
+  },
+
+  setSessionDirectory: () => {
+    // Session directory is owned by sync child stores via SSE events.
+    // This is now a no-op — kept for interface compatibility during migration.
+  },
+}))

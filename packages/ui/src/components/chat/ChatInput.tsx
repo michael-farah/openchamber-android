@@ -16,12 +16,14 @@ import {
     RiSendPlane2Line,
 } from '@remixicon/react';
 import { BrowserVoiceButton } from '@/components/voice';
-import { useSessionStore } from '@/stores/useSessionStore';
-import { useSessionStore as useSessionManagementStore } from '@/stores/sessionStore';
+// sessionStore removed — currentSessionId comes from useSessionUIStore
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useMessageQueueStore, type QueuedMessage } from '@/stores/messageQueueStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import type { AttachedFile } from '@/stores/types/sessionTypes';
+import * as sessionActions from '@/sync/session-actions';
+import { useSessionMessageRecords } from '@/sync/sync-context';
 import { useInlineCommentDraftStore, type InlineCommentDraft } from '@/stores/useInlineCommentDraftStore';
 import { appendInlineComments } from '@/lib/messages/inlineComments';
 import { AttachedFilesList } from './FileAttachment';
@@ -41,7 +43,7 @@ import { useAssistantStatus } from '@/hooks/useAssistantStatus';
 import { useCurrentSessionActivity } from '@/hooks/useSessionActivity';
 import { toast } from '@/components/ui';
 import { useFileStore } from '@/stores/fileStore';
-import { useMessageStore } from '@/stores/messageStore';
+// useMessageStore removed — messages now come from sync system
 import { isTauriShell, isVSCodeRuntime } from '@/lib/desktop';
 import { isIMECompositionEvent } from '@/lib/ime';
 import { StopIcon } from '@/components/icons/StopIcon';
@@ -273,7 +275,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
     const initialSessionIdRef = React.useRef<string | null>(null);
     const [message, setMessage] = React.useState(() => {
         // Read per-session draft at mount time using the current session from the store
-        const sessionId = useSessionStore.getState().currentSessionId;
+        const sessionId = useSessionUIStore.getState().currentSessionId;
         initialSessionIdRef.current = sessionId;
         const draft = getStoredDraft(sessionId);
         if (draft) {
@@ -313,25 +315,32 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
     const lastPersistedDraftRef = React.useRef<Map<string, string>>(new Map());
     const currentSessionIdForDraftRef = React.useRef<string | null>(null);
 
-    const sendMessage = useSessionStore((state) => state.sendMessage);
-    const currentSessionId = useSessionStore((state) => state.currentSessionId);
-    const newSessionDraft = useSessionStore((state) => state.newSessionDraft);
+    // TODO: port sendMessage to session-actions (complex — creates sessions, handles attachments, etc.)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sendMessage = React.useRef((...args: any[]) =>
+        Promise.resolve((useSessionUIStore.getState().sendMessage as (...a: unknown[]) => unknown)(...args)),
+    ).current;
+    const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
+    const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
     const newSessionDraftOpen = Boolean(newSessionDraft?.open);
-    const setNewSessionDraftTarget = useSessionStore((state) => state.setNewSessionDraftTarget);
-    const availableWorktreesByProject = useSessionStore((state) => state.availableWorktreesByProject);
-    const abortCurrentOperation = useSessionStore((state) => state.abortCurrentOperation);
-    const acknowledgeSessionAbort = useSessionStore((state) => state.acknowledgeSessionAbort);
-    const abortPromptSessionId = useSessionStore((state) => state.abortPromptSessionId);
-    const clearAbortPrompt = useSessionStore((state) => state.clearAbortPrompt);
-    const attachedFiles = useSessionStore((state) => state.attachedFiles);
-    const addAttachedFile = useSessionStore((state) => state.addAttachedFile);
-    const clearAttachedFiles = useSessionStore((state) => state.clearAttachedFiles);
-    const saveSessionAgentSelection = useSessionStore((state) => state.saveSessionAgentSelection);
-    const consumePendingInputText = useSessionStore((state) => state.consumePendingInputText);
-    const setPendingInputText = useSessionStore((state) => state.setPendingInputText);
-    const pendingInputText = useSessionStore((state) => state.pendingInputText);
-    const consumePendingSyntheticParts = useSessionStore((state) => state.consumePendingSyntheticParts);
-    const currentManagementSessionId = useSessionManagementStore((state) => state.currentSessionId);
+    const setNewSessionDraftTarget = useSessionUIStore((s) => s.setNewSessionDraftTarget);
+    const availableWorktreesByProject = useSessionUIStore((s) => s.availableWorktreesByProject);
+    const abortPromptSessionId = useSessionUIStore((s) => s.abortPromptSessionId);
+    const clearAbortPrompt = useSessionUIStore((s) => s.clearAbortPrompt);
+    const attachedFiles = useSessionUIStore((s) => s.attachedFiles);
+    const addAttachedFile = useSessionUIStore((s) => s.addAttachedFile);
+    const clearAttachedFiles = useSessionUIStore((s) => s.clearAttachedFiles);
+    const saveSessionAgentSelection = useSessionUIStore((s) => s.saveSessionAgentSelection);
+    const consumePendingInputText = useSessionUIStore((s) => s.consumePendingInputText);
+    const setPendingInputText = useSessionUIStore((s) => s.setPendingInputText);
+    const pendingInputText = useSessionUIStore((s) => s.pendingInputText);
+    const consumePendingSyntheticParts = useSessionUIStore((s) => s.consumePendingSyntheticParts);
+    const acknowledgeSessionAbort = useSessionUIStore((s) => s.acknowledgeSessionAbort);
+    const abortCurrentOperation = React.useCallback(
+        (sessionIdOverride?: string) => sessionActions.abortCurrentOperation(sessionIdOverride ?? currentSessionId ?? ''),
+        [currentSessionId],
+    );
+    const currentManagementSessionId = currentSessionId;
     const projects = useProjectsStore((state) => state.projects);
     const activeProjectId = useProjectsStore((state) => state.activeProjectId);
     const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
@@ -565,15 +574,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
 
     // User message history for up/down arrow navigation
     // Get raw messages from store (stable reference)
-    const sessionMessages = useMessageStore(
-        React.useCallback(
-            (state) => (currentSessionId ? state.messages.get(currentSessionId) : undefined),
-            [currentSessionId]
-        )
-    );
+    const sessionMessages = useSessionMessageRecords(currentSessionId ?? "");
     // Derive user message history with useMemo to avoid infinite re-renders
     const userMessageHistory = React.useMemo(() => {
-        if (!sessionMessages) return [];
+        if (!sessionMessages || !currentSessionId) return [];
         return sessionMessages
             .filter((m) => m.info.role === 'user')
             .map((m) => {
@@ -585,7 +589,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
             })
             .filter((text) => text.length > 0)
             .reverse(); // Most recent first
-    }, [sessionMessages]);
+    }, [sessionMessages, currentSessionId]);
 
     // Keep messageRef in sync with message state
     React.useEffect(() => {
@@ -1039,14 +1043,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
 
             // NEW: /undo - revert to last message (populates input with reverted message text)
             if (commandName === 'undo' && currentSessionId) {
-                await useSessionStore.getState().handleSlashUndo(currentSessionId);
+                await useSessionUIStore.getState().handleSlashUndo(currentSessionId);
                 // Don't clear message - pendingInputText will populate it with reverted message
                 scrollToBottom?.({ instant: true, force: true });
                 return; // Don't send to assistant
             }
             // NEW: /redo - unrevert or partial redo (populates input with message text)
             else if (commandName === 'redo' && currentSessionId) {
-                await useSessionStore.getState().handleSlashRedo(currentSessionId);
+                await useSessionUIStore.getState().handleSlashRedo(currentSessionId);
                 // Don't clear message - pendingInputText will populate it
                 scrollToBottom?.({ instant: true, force: true });
                 return; // Don't send to assistant
@@ -2554,7 +2558,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
         if (!selectedDraftDirectory || !selectedDraftBranchIsKnown) {
             return;
         }
-        useSessionStore.getState().setDraftPreserveDirectoryOverride(false);
+        useSessionUIStore.getState().setDraftPreserveDirectoryOverride(false);
     }, [newSessionDraft?.open, newSessionDraft?.preserveDirectoryOverride, selectedDraftBranchIsKnown, selectedDraftDirectory]);
 
     const shouldShowDraftBranchSelector = React.useMemo(() => {
@@ -2568,7 +2572,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
     }, [isDiscoveringDraftBranches, projectRootBranchOption, worktreeBranchOptions.length]);
 
     const handleDraftProjectChange = React.useCallback((projectId: string) => {
-        const draft = useSessionStore.getState().newSessionDraft;
+        const draft = useSessionUIStore.getState().newSessionDraft;
         if (draft?.pendingWorktreeRequestId || draft?.bootstrapPendingDirectory || draft?.preserveDirectoryOverride) {
             return;
         }
@@ -2586,7 +2590,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBo
     }, [activeProjectId, projects, setActiveProjectIdOnly, setNewSessionDraftTarget]);
 
     const handleDraftDirectoryChange = React.useCallback((directory: string) => {
-        const draft = useSessionStore.getState().newSessionDraft;
+        const draft = useSessionUIStore.getState().newSessionDraft;
         if (draft?.pendingWorktreeRequestId || draft?.bootstrapPendingDirectory || draft?.preserveDirectoryOverride) {
             return;
         }

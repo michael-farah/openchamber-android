@@ -19,7 +19,7 @@ import { ArrowsMerge } from '@/components/icons/ArrowsMerge';
 import type { ContentChangeReason } from '@/hooks/useChatScrollManager';
 
 import { SimpleMarkdownRenderer } from '../MarkdownRenderer';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useUIStore } from '@/stores/useUIStore';
 import { flattenAssistantTextParts } from '@/lib/messages/messageText';
 import { MULTIRUN_EXECUTION_FORK_PROMPT_META_TEXT } from '@/lib/messages/executionMeta';
@@ -78,7 +78,7 @@ const normalizeSubtaskModel = (model: SubtaskPartLike['model']): string | null =
 
 const UserSubtaskPart: React.FC<{ part: SubtaskPartLike }> = ({ part }) => {
     const [expanded, setExpanded] = React.useState(false);
-    const setCurrentSession = useSessionStore((state) => state.setCurrentSession);
+    const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
 
     const description = typeof part.description === 'string' ? part.description.trim() : '';
     const command = typeof part.command === 'string' ? part.command.trim() : '';
@@ -699,7 +699,7 @@ const AssistantMessageBody: React.FC<Omit<MessageBodyProps, 'isUser'>> = ({
         return visibleParts.filter((part) => part.type === 'text');
     }, [visibleParts]);
 
-    const createSessionFromAssistantMessage = useSessionStore((state) => state.createSessionFromAssistantMessage);
+    const createSessionFromAssistantMessage = useSessionUIStore((state) => state.createSessionFromAssistantMessage);
     const openMultiRunLauncherWithPrompt = useUIStore((state) => state.openMultiRunLauncherWithPrompt);
     const chatRenderMode = useUIStore((state) => state.chatRenderMode);
     const isSortedRenderMode = chatRenderMode === 'sorted';

@@ -12,7 +12,7 @@ import { copyTextToClipboard } from '@/lib/clipboard';
 import { cn } from '@/lib/utils';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { useAgentGroupsStore, type AgentGroup, type AgentGroupSession } from '@/stores/useAgentGroupsStore';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { ChatContainer } from '@/components/chat/ChatContainer';
 import { ChatErrorBoundary } from '@/components/chat/ChatErrorBoundary';
 import {
@@ -40,7 +40,7 @@ export const AgentGroupDetail: React.FC<AgentGroupDetailProps> = ({
   className,
 }) => {
   const { selectedSessionId, selectSession, deleteGroupWorktree, keepOnlyGroupWorktree } = useAgentGroupsStore();
-  const { setCurrentSession, currentSessionId } = useSessionStore();
+  const { setCurrentSession, currentSessionId } = useSessionUIStore();;
   const [worktreeDialog, setWorktreeDialog] = React.useState<null | { kind: 'remove' | 'keepOnly'; path: string; label: string }>(null);
   const [isProcessing, setIsProcessing] = React.useState(false);
   

@@ -51,10 +51,6 @@ export const areRenderRelevantPartsEqual = (left: Part[], right: Part[]): boolea
       return false;
     }
 
-    if ((leftPart.type === 'text' || leftPart.type === 'reasoning') && leftId) {
-      continue;
-    }
-
     if (leftPart.type === 'tool') {
       if (readToolStatus(leftPart) !== readToolStatus(rightPart)) {
         return false;

@@ -1,26 +1,24 @@
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSessions } from '@/sync/sync-context';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import type { Session } from '@opencode-ai/sdk/v2';
 
 /**
  * Hook that resolves the effective working directory for tabs (Git, Diff, Files, Terminal).
- * 
+ *
  * Priority order:
  * 1. Worktree metadata path (for worktree sessions)
  * 2. Session directory (for active sessions)
  * 3. Draft session directoryOverride (when creating a new session)
  * 4. Fallback directory from DirectoryStore
- * 
+ *
  * This ensures that tabs show content from the correct project directory
  * even when a draft session is being created.
  */
 export const useEffectiveDirectory = (): string | undefined => {
-    const {
-        currentSessionId,
-        sessions,
-        worktreeMetadata: worktreeMap,
-        newSessionDraft,
-    } = useSessionStore();
+    const { currentSessionId, newSessionDraft } = useSessionUIStore();
+    const sessions = useSessions();
+    const worktreeMap = useSessionUIStore((state) => state.worktreeMetadata);
     const { currentDirectory: fallbackDirectory } = useDirectoryStore();
 
     // If we have an active session, use its directory

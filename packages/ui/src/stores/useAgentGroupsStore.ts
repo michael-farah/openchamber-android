@@ -4,7 +4,7 @@ import { opencodeClient } from '@/lib/opencode/client';
 import { listProjectWorktrees } from '@/lib/worktrees/worktreeManager';
 import { useDirectoryStore } from './useDirectoryStore';
 import { useProjectsStore } from './useProjectsStore';
-import { useSessionStore } from './useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import type { WorktreeMetadata } from '@/types/worktree';
 import type { Session } from '@opencode-ai/sdk/v2';
 
@@ -231,7 +231,7 @@ const collectDeleteCandidates = async (params: {
 }): Promise<Array<{ worktreePath: string; sessionIds: string[]; metadata?: WorktreeMetadata }>> => {
   const { apiClient, group, projectDirectory, worktreePaths } = params;
   const metadataByPath = await buildWorktreeMetadataByPath(group, projectDirectory);
-  const sessionStore = useSessionStore.getState();
+  const sessionStore = useSessionUIStore.getState();
 
   const uniqueWorktreePaths = Array.from(new Set(worktreePaths.map((path) => normalize(path)).filter(Boolean)));
   const concurrency = 5;
@@ -285,7 +285,7 @@ const deleteGroupWorktreeSessions = async (params: {
     worktreePaths: params.worktreePaths,
   });
 
-  const sessionStore = useSessionStore.getState();
+  const sessionStore = useSessionUIStore.getState();
   const ids = new Set<string>();
 
   candidates.forEach(({ worktreePath, sessionIds, metadata }) => {

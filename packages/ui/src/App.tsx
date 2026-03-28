@@ -8,11 +8,10 @@ import { Toaster } from '@/components/ui/sonner';
 import { MemoryDebugPanel } from '@/components/ui/MemoryDebugPanel';
 import { setStreamPerfEnabled } from '@/stores/utils/streamDebug';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
-import { useEventStream } from '@/hooks/useEventStream';
+// useEventStream removed — replaced by SyncProvider + SyncBridge
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useMenuActions } from '@/hooks/useMenuActions';
 import { useSessionStatusBootstrap } from '@/hooks/useSessionStatusBootstrap';
-import { useServerSessionStatus } from '@/hooks/useServerSessionStatus';
 import { useSessionAutoCleanup } from '@/hooks/useSessionAutoCleanup';
 import { useQueuedMessageAutoSend } from '@/hooks/useQueuedMessageAutoSend';
 import { useRouter } from '@/hooks/useRouter';
@@ -26,9 +25,10 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { hasModifier } from '@/lib/utils';
 import { isDesktopLocalOriginActive, isDesktopShell } from '@/lib/desktop';
 import { OnboardingScreen } from '@/components/onboarding/OnboardingScreen';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { opencodeClient } from '@/lib/opencode/client';
+import { SyncProvider, useSessions } from '@/sync/sync-context';
 import { useFontPreferences } from '@/hooks/useFontPreferences';
 import { CODE_FONT_OPTION_MAP, DEFAULT_MONO_FONT, DEFAULT_UI_FONT, UI_FONT_OPTION_MAP } from '@/lib/fontOptions';
 import { ConfigUpdateOverlay } from '@/components/ui/ConfigUpdateOverlay';
@@ -95,16 +95,53 @@ const readEmbeddedSessionChatConfig = (): EmbeddedSessionChatConfig | null => {
   };
 };
 
+const EmbeddedSessionSelectionGate: React.FC<{
+  embeddedSessionChat: EmbeddedSessionChatConfig | null;
+  isVSCodeRuntime: boolean;
+}> = ({ embeddedSessionChat, isVSCodeRuntime }) => {
+  const sessions = useSessions();
+  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+  const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
+
+  React.useEffect(() => {
+    if (!embeddedSessionChat || isVSCodeRuntime) {
+      return;
+    }
+
+    if (currentSessionId === embeddedSessionChat.sessionId) {
+      return;
+    }
+
+    if (!sessions.some((session) => session.id === embeddedSessionChat.sessionId)) {
+      return;
+    }
+
+    void setCurrentSession(embeddedSessionChat.sessionId);
+  }, [currentSessionId, embeddedSessionChat, isVSCodeRuntime, sessions, setCurrentSession]);
+
+  return null;
+};
+
+const SyncAppEffects: React.FC<{
+  apis: RuntimeAPIs;
+  embeddedBackgroundWorkEnabled: boolean;
+}> = ({ apis, embeddedBackgroundWorkEnabled }) => {
+  useGitHubPrBackgroundTracking(embeddedBackgroundWorkEnabled ? apis.github : undefined, apis.git);
+  usePwaManifestSync();
+  useSessionAutoCleanup({ enabled: embeddedBackgroundWorkEnabled });
+  useQueuedMessageAutoSend({ enabled: embeddedBackgroundWorkEnabled });
+  useKeyboardShortcuts();
+
+  return null;
+};
+
 function App({ apis }: AppProps) {
   const { initializeApp, isInitialized, isConnected } = useConfigStore();
   const providersCount = useConfigStore((state) => state.providers.length);
   const agentsCount = useConfigStore((state) => state.agents.length);
   const loadProviders = useConfigStore((state) => state.loadProviders);
   const loadAgents = useConfigStore((state) => state.loadAgents);
-  const { error, clearError, loadSessions } = useSessionStore();
-  const currentSessionId = useSessionStore((state) => state.currentSessionId);
-  const setCurrentSession = useSessionStore((state) => state.setCurrentSession);
-  const sessions = useSessionStore((state) => state.sessions);
+  const { error, clearError } = useSessionUIStore();
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
   const setDirectory = useDirectoryStore((state) => state.setDirectory);
   const isSwitchingDirectory = useDirectoryStore((state) => state.isSwitchingDirectory);
@@ -142,8 +179,6 @@ function App({ apis }: AppProps) {
 
     void refreshGitHubAuthStatus(apis.github, { force: true });
   }, [apis.github, embeddedSessionChat, refreshGitHubAuthStatus]);
-
-  useGitHubPrBackgroundTracking(embeddedBackgroundWorkEnabled ? apis.github : undefined, apis.git);
 
   React.useEffect(() => {
     if (typeof document === 'undefined') {
@@ -258,22 +293,18 @@ function App({ apis }: AppProps) {
       return;
     }
 
-    const syncDirectoryAndSessions = async () => {
-      // VS Code runtime loads sessions via VSCodeLayout bootstrap to avoid startup races.
-      if (isVSCodeRuntime) {
-        return;
-      }
+    // VS Code runtime loads sessions via VSCodeLayout bootstrap to avoid startup races.
+    if (isVSCodeRuntime) {
+      return;
+    }
 
-      if (!isConnected) {
-        return;
-      }
-      opencodeClient.setDirectory(currentDirectory);
+    if (!isConnected) {
+      return;
+    }
+    opencodeClient.setDirectory(currentDirectory);
 
-      await loadSessions();
-    };
-
-    syncDirectoryAndSessions();
-  }, [currentDirectory, isSwitchingDirectory, loadSessions, isConnected, isVSCodeRuntime]);
+    // Session loading is handled by the sync system's bootstrap — no manual loadSessions needed.
+  }, [currentDirectory, isSwitchingDirectory, isConnected, isVSCodeRuntime]);
 
   React.useEffect(() => {
     if (!embeddedSessionChat || typeof window === 'undefined') {
@@ -326,22 +357,6 @@ function App({ apis }: AppProps) {
   }, [currentDirectory, embeddedSessionChat, isVSCodeRuntime, setDirectory]);
 
   React.useEffect(() => {
-    if (!embeddedSessionChat || isVSCodeRuntime) {
-      return;
-    }
-
-    if (currentSessionId === embeddedSessionChat.sessionId) {
-      return;
-    }
-
-    if (!sessions.some((session) => session.id === embeddedSessionChat.sessionId)) {
-      return;
-    }
-
-    void setCurrentSession(embeddedSessionChat.sessionId);
-  }, [currentSessionId, embeddedSessionChat, isVSCodeRuntime, sessions, setCurrentSession]);
-
-  React.useEffect(() => {
     if (!embeddedSessionChat || typeof window === 'undefined') {
       return;
     }
@@ -373,21 +388,16 @@ function App({ apis }: AppProps) {
     window.dispatchEvent(new Event('openchamber:app-ready'));
   }, [isInitialized, isSwitchingDirectory]);
 
-  useEventStream({ enabled: embeddedBackgroundWorkEnabled });
+  // useEventStream replaced by SyncProvider + SyncBridge
 
-  // Server-authoritative session status polling
-  // Replaces SSE-dependent status updates with reliable HTTP polling
-  useServerSessionStatus({ enabled: embeddedBackgroundWorkEnabled });
+  // Session attention now handled by notification-store via SSE events (session.idle/session.error)
 
   usePushVisibilityBeacon({ enabled: embeddedBackgroundWorkEnabled });
-  usePwaManifestSync();
   usePwaInstallPrompt();
 
   useWindowTitle();
 
   useRouter();
-
-  useKeyboardShortcuts();
 
   const handleToggleMemoryDebug = React.useCallback(() => {
     setShowMemoryDebug(prev => !prev);
@@ -396,8 +406,6 @@ function App({ apis }: AppProps) {
   useMenuActions(handleToggleMemoryDebug);
 
   useSessionStatusBootstrap({ enabled: embeddedBackgroundWorkEnabled });
-  useSessionAutoCleanup({ enabled: embeddedBackgroundWorkEnabled });
-  useQueuedMessageAutoSend({ enabled: embeddedBackgroundWorkEnabled });
 
   React.useEffect(() => {
     if (embeddedSessionChat) {
@@ -491,14 +499,18 @@ function App({ apis }: AppProps) {
   if (embeddedSessionChat) {
     return (
       <ErrorBoundary>
-        <RuntimeAPIProvider apis={apis}>
-          <TooltipProvider delayDuration={700} skipDelayDuration={150}>
-            <div className="h-full text-foreground bg-background">
-              <ChatView />
-              <Toaster />
-            </div>
-          </TooltipProvider>
-        </RuntimeAPIProvider>
+        <SyncProvider sdk={opencodeClient.getSdkClient()} directory={currentDirectory || ''}>
+          <RuntimeAPIProvider apis={apis}>
+            <TooltipProvider delayDuration={700} skipDelayDuration={150}>
+              <div className="h-full text-foreground bg-background">
+                <EmbeddedSessionSelectionGate embeddedSessionChat={embeddedSessionChat} isVSCodeRuntime={isVSCodeRuntime} />
+                <SyncAppEffects apis={apis} embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
+                <ChatView />
+                <Toaster />
+              </div>
+            </TooltipProvider>
+          </RuntimeAPIProvider>
+        </SyncProvider>
       </ErrorBoundary>
     );
   }
@@ -506,62 +518,71 @@ function App({ apis }: AppProps) {
   // VS Code runtime - simplified layout without git/terminal views
   if (isVSCodeRuntime) {
     // Check if this is the Agent Manager panel
-    const panelType = typeof window !== 'undefined' 
-      ? (window as { __OPENCHAMBER_PANEL_TYPE__?: 'chat' | 'agentManager' }).__OPENCHAMBER_PANEL_TYPE__ 
+    const panelType = typeof window !== 'undefined'
+      ? (window as { __OPENCHAMBER_PANEL_TYPE__?: 'chat' | 'agentManager' }).__OPENCHAMBER_PANEL_TYPE__
       : 'chat';
-    
+
     if (panelType === 'agentManager') {
     return (
       <ErrorBoundary>
-        <RuntimeAPIProvider apis={apis}>
-          <TooltipProvider delayDuration={700} skipDelayDuration={150}>
-            <div className="h-full text-foreground bg-background">
-              <AgentManagerView />
-              <Toaster />
-            </div>
-          </TooltipProvider>
-        </RuntimeAPIProvider>
-      </ErrorBoundary>
-    );
-    }
-    
-    return (
-      <ErrorBoundary>
-        <RuntimeAPIProvider apis={apis}>
-          <FireworksProvider>
+        <SyncProvider sdk={opencodeClient.getSdkClient()} directory={currentDirectory || ''}>
+          <RuntimeAPIProvider apis={apis}>
             <TooltipProvider delayDuration={700} skipDelayDuration={150}>
               <div className="h-full text-foreground bg-background">
-                <VSCodeLayout />
+                <SyncAppEffects apis={apis} embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
+                <AgentManagerView />
                 <Toaster />
               </div>
             </TooltipProvider>
-          </FireworksProvider>
-        </RuntimeAPIProvider>
+          </RuntimeAPIProvider>
+        </SyncProvider>
+      </ErrorBoundary>
+    );
+    }
+
+    return (
+      <ErrorBoundary>
+        <SyncProvider sdk={opencodeClient.getSdkClient()} directory={currentDirectory || ''}>
+          <RuntimeAPIProvider apis={apis}>
+            <FireworksProvider>
+              <TooltipProvider delayDuration={700} skipDelayDuration={150}>
+                <div className="h-full text-foreground bg-background">
+                  <SyncAppEffects apis={apis} embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
+                  <VSCodeLayout />
+                  <Toaster />
+                </div>
+              </TooltipProvider>
+            </FireworksProvider>
+          </RuntimeAPIProvider>
+        </SyncProvider>
       </ErrorBoundary>
     );
   }
 
   return (
     <ErrorBoundary>
-      <RuntimeAPIProvider apis={apis}>
-        <GitPollingProvider>
-          <FireworksProvider>
-            <VoiceProvider>
-              <TooltipProvider delayDuration={700} skipDelayDuration={150}>
-                <div className={isDesktopRuntime ? 'h-full text-foreground bg-transparent' : 'h-full text-foreground bg-background'}>
-                  <MainLayout />
-                  <Toaster />
-                  <ConfigUpdateOverlay />
-                  <AboutDialogWrapper />
-                  {showMemoryDebug && (
-                    <MemoryDebugPanel onClose={() => setShowMemoryDebug(false)} />
-                  )}
-                </div>
-              </TooltipProvider>
-            </VoiceProvider>
-          </FireworksProvider>
-        </GitPollingProvider>
-      </RuntimeAPIProvider>
+      <SyncProvider sdk={opencodeClient.getSdkClient()} directory={currentDirectory || ''}>
+        <RuntimeAPIProvider apis={apis}>
+          <GitPollingProvider>
+            <FireworksProvider>
+              <VoiceProvider>
+                <TooltipProvider delayDuration={700} skipDelayDuration={150}>
+                  <div className={isDesktopRuntime ? 'h-full text-foreground bg-transparent' : 'h-full text-foreground bg-background'}>
+                    <SyncAppEffects apis={apis} embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
+                    <MainLayout />
+                    <Toaster />
+                    <ConfigUpdateOverlay />
+                    <AboutDialogWrapper />
+                    {showMemoryDebug && (
+                      <MemoryDebugPanel onClose={() => setShowMemoryDebug(false)} />
+                    )}
+                  </div>
+                </TooltipProvider>
+              </VoiceProvider>
+            </FireworksProvider>
+          </GitPollingProvider>
+        </RuntimeAPIProvider>
+      </SyncProvider>
     </ErrorBoundary>
   );
 }

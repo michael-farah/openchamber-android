@@ -1,5 +1,5 @@
 import React from 'react';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useFireworksCelebration } from '@/contexts/FireworksContext';
 import type { GitIdentityProfile, CommitFileEntry } from '@/lib/api/types';
@@ -225,13 +225,8 @@ export const GitView: React.FC = () => {
   const currentDirectory = useEffectiveDirectory();
   const [worktreeBootstrapStatus, setWorktreeBootstrapStatus] = React.useState<'pending' | 'ready' | 'failed' | null>(null);
   const [isWaitingForGitRefreshAfterBootstrap, setIsWaitingForGitRefreshAfterBootstrap] = React.useState(false);
-  const {
-    currentSessionId,
-    worktreeMetadata: worktreeMap,
-    availableWorktrees,
-    newSessionDraft,
-    setDraftBootstrapPendingDirectory,
-  } = useSessionStore();
+  const { currentSessionId, newSessionDraft, setDraftBootstrapPendingDirectory } = useSessionUIStore();
+    const { worktreeMetadata: worktreeMap, availableWorktrees } = useSessionUIStore();;
   const normalizedCurrentDirectory = normalizePath(currentDirectory);
   const inferredWorktreeMetadata = React.useMemo(() => {
     if (!normalizedCurrentDirectory) {

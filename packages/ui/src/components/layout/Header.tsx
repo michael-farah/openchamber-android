@@ -20,7 +20,8 @@ import { RiArrowLeftSLine, RiChat4Line, RiChatNewLine, RiCheckLine, RiCloseLine,
 import { DiffIcon } from '@/components/icons/DiffIcon';
 import { useUIStore, type MainTab } from '@/stores/useUIStore';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSessions, useSessionMessageRecords } from '@/sync/sync-context';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useQuotaAutoRefresh, useQuotaStore } from '@/stores/useQuotaStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
@@ -241,17 +242,13 @@ export const Header: React.FC<HeaderProps> = ({
   const { getCurrentModel } = useConfigStore();
   const runtimeApis = useRuntimeAPIs();
 
-  const getContextUsage = useSessionStore((state) => state.getContextUsage);
-  const openNewSessionDraft = useSessionStore((state) => state.openNewSessionDraft);
-  const isNewSessionDraftOpen = useSessionStore((state) => Boolean(state.newSessionDraft?.open));
-  const currentSessionId = useSessionStore((state) => state.currentSessionId);
-  const currentSessionMessages = useSessionStore((state) => {
-    if (!currentSessionId) {
-      return undefined;
-    }
-    return state.messages.get(currentSessionId);
-  });
-  const sessions = useSessionStore((state) => state.sessions);
+  const getContextUsage = useSessionUIStore((state) => state.getContextUsage);
+  const openNewSessionDraft = useSessionUIStore((state) => state.openNewSessionDraft);
+  const isNewSessionDraftOpen = useSessionUIStore((state) => Boolean(state.newSessionDraft?.open));
+  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+  const currentSessionMessageRecords = useSessionMessageRecords(currentSessionId ?? '');
+  const currentSessionMessages = currentSessionId ? (currentSessionMessageRecords.length > 0 ? currentSessionMessageRecords : undefined) : undefined;
+  const sessions = useSessions();
   const activeProject = useProjectsStore((state) => {
     if (!state.activeProjectId) {
       return null;
@@ -568,11 +565,11 @@ export const Header: React.FC<HeaderProps> = ({
     return sessions.find((s) => s.id === currentSessionId) ?? null;
   }, [currentSessionId, sessions]);
 
-  const worktreePath = useSessionStore((state) => {
+  const worktreePath = useSessionUIStore((state) => {
     if (!currentSessionId) return '';
     return state.worktreeMetadata.get(currentSessionId)?.path ?? '';
   });
-  const currentSessionWorktreeBranch = useSessionStore((state) => {
+  const currentSessionWorktreeBranch = useSessionUIStore((state) => {
     if (!currentSessionId) return null;
     return state.worktreeMetadata.get(currentSessionId)?.branch?.trim() ?? null;
   });
@@ -588,7 +585,7 @@ export const Header: React.FC<HeaderProps> = ({
     return normalize(raw || '');
   }, [currentSession?.directory]);
 
-  const draftDirectory = useSessionStore((state) => {
+  const draftDirectory = useSessionUIStore((state) => {
     if (!state.newSessionDraft?.open) {
       return '';
     }

@@ -6,8 +6,8 @@ import { AgentGroupDetail } from './AgentGroupDetail';
 import { cn } from '@/lib/utils';
 import { useAgentGroupsStore } from '@/stores/useAgentGroupsStore';
 import { useMultiRunStore } from '@/stores/useMultiRunStore';
-import { useSessionStore } from '@/stores/useSessionStore';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { getSyncSessions } from '@/sync/sync-refs';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { streamDebugEnabled } from '@/stores/utils/streamDebug';
 import type { CreateMultiRunParams } from '@/types/multirun';
@@ -32,7 +32,6 @@ export const AgentManagerView: React.FC<AgentManagerViewProps> = ({ className })
   );
   const configInitialized = useConfigStore((state) => state.isInitialized);
   const initializeApp = useConfigStore((state) => state.initializeApp);
-  const loadSessions = useSessionStore((state) => state.loadSessions);
   const setDirectory = useDirectoryStore((state) => state.setDirectory);
   const bootstrapAttemptAt = React.useRef<number>(0);
 
@@ -108,13 +107,11 @@ export const AgentManagerView: React.FC<AgentManagerViewProps> = ({ className })
           return;
         }
 
-        await loadSessions();
-
         if (streamDebugEnabled()) {
           console.log('[OpenChamber][VSCode][agentManager] bootstrap complete', {
             providers: configState.providers.length,
             agents: configState.agents.length,
-            sessions: useSessionStore.getState().sessions.length,
+            sessions: getSyncSessions().length,
           });
         }
       } catch {
@@ -123,7 +120,7 @@ export const AgentManagerView: React.FC<AgentManagerViewProps> = ({ className })
     };
 
     void runBootstrap();
-  }, [connectionStatus, configInitialized, initializeApp, isVSCodeRuntime, loadSessions, setDirectory]);
+  }, [connectionStatus, configInitialized, initializeApp, isVSCodeRuntime, setDirectory]);
 
   const handleGroupSelect = React.useCallback((groupName: string) => {
     selectGroup(groupName);
@@ -154,13 +151,6 @@ export const AgentManagerView: React.FC<AgentManagerViewProps> = ({ className })
         }
         return false;
       };
-
-      // Refresh sessions + groups and wait briefly for OpenCode to surface the new worktree sessions.
-      try {
-        await useSessionStore.getState().loadSessions();
-      } catch {
-        // ignore
-      }
 
       await waitForGroup();
       selectGroup(groupSlug);

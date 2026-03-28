@@ -47,7 +47,8 @@ import { getEditModeColors } from '@/lib/permissions/editModeColors';
 import { cn, fuzzyMatch } from '@/lib/utils';
 import { useContextStore } from '@/stores/contextStore';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSessionMessages } from '@/sync/sync-context';
 import { useUIStore } from '@/stores/useUIStore';
 import { useModelLists } from '@/hooks/useModelLists';
 import { useIsTextTruncated } from '@/hooks/useIsTextTruncated';
@@ -316,18 +317,17 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     const {
         currentSessionId,
-        messages,
         saveSessionAgentSelection,
         saveAgentModelForSession,
         getAgentModelForSession,
         saveAgentModelVariantForSession,
         getAgentModelVariantForSession,
         analyzeAndSaveExternalSessionChoices,
-    } = useSessionStore();
+    } = useSessionUIStore();
 
     const contextHydrated = useContextStore((state) => state.hasHydrated);
 
-    const sessionSavedAgentName = useContextStore((state) =>
+    const sessionSavedAgentName = useSessionUIStore((state) =>
         currentSessionId ? state.sessionAgentSelections.get(currentSessionId) ?? null : null
     );
 
@@ -564,7 +564,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     const prevAgentNameRef = React.useRef<string | undefined>(undefined);
 
-    const currentSessionMessageCount = currentSessionId ? (messages.get(currentSessionId)?.length ?? -1) : -1;
+    const currentSessionMessagesFromSync = useSessionMessages(currentSessionId ?? '');
+    const currentSessionMessageCount = currentSessionId ? currentSessionMessagesFromSync.length : -1;
 
     const sessionInitializationRef = React.useRef<{
         sessionId: string;
@@ -652,7 +653,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
         const applySavedSelections = (): 'resolved' | 'waiting' | 'continue' => {
             const savedAgentName = currentSessionId
-                ? (useContextStore.getState().getSessionAgentSelection(currentSessionId) || stickySessionAgentRef.current)
+                ? (useSessionUIStore.getState().getSessionAgentSelection(currentSessionId) || stickySessionAgentRef.current)
                 : null;
             if (savedAgentName) {
                 if (currentAgentName !== savedAgentName) {
@@ -683,7 +684,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     setAgent(agent.name);
                 }
 
-                const existingSelection = useContextStore.getState().getSessionAgentSelection(currentSessionId) || stickySessionAgentRef.current;
+                const existingSelection = useSessionUIStore.getState().getSessionAgentSelection(currentSessionId) || stickySessionAgentRef.current;
                 if (!existingSelection) {
                     saveSessionAgentSelection(currentSessionId, agent.name);
                 }
@@ -705,14 +706,14 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             }
 
             const existingSelection = currentSessionId
-                ? (useContextStore.getState().getSessionAgentSelection(currentSessionId) || stickySessionAgentRef.current)
+                ? (useSessionUIStore.getState().getSessionAgentSelection(currentSessionId) || stickySessionAgentRef.current)
                 : null;
 
             // If we already have a valid agent selected (often from server-injected mode switch),
             // don't override it with a fallback.
             const preferred =
                 (currentSessionId
-                    ? (useContextStore.getState().getSessionAgentSelection(currentSessionId) || stickySessionAgentRef.current)
+                    ? (useSessionUIStore.getState().getSessionAgentSelection(currentSessionId) || stickySessionAgentRef.current)
                     : null) ||
                 currentAgentName;
             if (preferred && agents.some((agent) => agent.name === preferred)) {
@@ -777,7 +778,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                             if (latestAgent) {
                                 // If server/user already selected an agent for this session, don't override
                                 // with heuristic inference mid-stream.
-                                const latestSaved = useContextStore.getState().getSessionAgentSelection(currentSessionId) || stickySessionAgentRef.current;
+                                const latestSaved = useSessionUIStore.getState().getSessionAgentSelection(currentSessionId) || stickySessionAgentRef.current;
                                 if (latestSaved && latestSaved !== latestAgent) {
                                     finalize();
                                     return;

@@ -187,15 +187,7 @@ export interface SessionStore {
         { type: 'idle' | 'busy' | 'retry'; attempt?: number; message?: string; next?: number; confirmedAt?: number }
     >;
 
-    // Server-authoritative session attention state
-    // Tracks which sessions need user attention based on server-side logic
-    sessionAttentionStates: Map<string, {
-        needsAttention: boolean;
-        lastUserMessageAt: number | null;
-        lastStatusChangeAt: number;
-        status: 'idle' | 'busy' | 'retry';
-        isViewed: boolean;
-    }>;
+    // sessionAttentionStates removed — replaced by notification-store
 
     userSummaryTitles: Map<string, { title: string; createdAt: number | null }>;
 

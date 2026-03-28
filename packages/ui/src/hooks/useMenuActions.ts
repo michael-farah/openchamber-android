@@ -1,6 +1,6 @@
 import React from 'react';
 import { toast } from '@/components/ui';
-import { useSessionStore } from '@/stores/useSessionStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useUIStore } from '@/stores/useUIStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useUpdateStore } from '@/stores/useUpdateStore';
@@ -48,7 +48,7 @@ type MenuAction =
 export const useMenuActions = (
   onToggleMemoryDebug?: () => void
 ) => {
-  const { openNewSessionDraft } = useSessionStore();
+  const { openNewSessionDraft } = useSessionUIStore();;
   const {
     toggleCommandPalette,
     toggleHelpDialog,
