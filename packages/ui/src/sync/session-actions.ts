@@ -66,45 +66,51 @@ export async function createSession(
   }
 }
 
-/** Optimistically remove a session from the child store list. */
-function optimisticRemoveSession(sessionId: string) {
+/** Optimistically remove a session from the child store list. Returns previous list for rollback. */
+function optimisticRemoveSession(sessionId: string): Session[] | null {
   const store = dirStore()
   const current = store.getState()
   const sessions = [...current.session]
   const result = Binary.search(sessions, sessionId, (s) => s.id)
   if (result.found) {
+    const snapshot = current.session
     sessions.splice(result.index, 1)
     store.setState({ session: sessions })
+    return snapshot
   }
+  return null
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function deleteSession(sessionId: string, _options?: Record<string, unknown>): Promise<boolean> {
+  // Remove from UI immediately, rollback on error
+  const snapshot = optimisticRemoveSession(sessionId)
+  const ui = useSessionUIStore.getState()
+  if (ui.currentSessionId === sessionId) {
+    ui.setCurrentSession(null)
+  }
   try {
     await sdk().session.delete({ sessionID: sessionId, directory: dir() })
-    optimisticRemoveSession(sessionId)
-    const ui = useSessionUIStore.getState()
-    if (ui.currentSessionId === sessionId) {
-      ui.setCurrentSession(null)
-    }
     return true
   } catch (error) {
     console.error("[session-actions] deleteSession failed", error)
+    if (snapshot) dirStore().setState({ session: snapshot })
     return false
   }
 }
 
 export async function archiveSession(sessionId: string): Promise<boolean> {
+  const snapshot = optimisticRemoveSession(sessionId)
+  const ui = useSessionUIStore.getState()
+  if (ui.currentSessionId === sessionId) {
+    ui.setCurrentSession(null)
+  }
   try {
     await sdk().session.update({ sessionID: sessionId, directory: dir(), time: { archived: Date.now() } })
-    optimisticRemoveSession(sessionId)
-    const ui = useSessionUIStore.getState()
-    if (ui.currentSessionId === sessionId) {
-      ui.setCurrentSession(null)
-    }
     return true
   } catch (error) {
     console.error("[session-actions] archiveSession failed", error)
+    if (snapshot) dirStore().setState({ session: snapshot })
     return false
   }
 }

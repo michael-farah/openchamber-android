@@ -10,6 +10,8 @@ import { formatDirectoryName, cn } from '@/lib/utils';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessions, useDirectorySync, useAllSessionStatuses } from '@/sync/sync-context';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { useSync } from '@/sync/use-sync';
+import { useSessionPrefetch } from './sidebar/hooks/useSessionPrefetch';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import type { GitHubPullRequestStatus } from '@/lib/api/types';
@@ -304,6 +306,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
   const gitDirectories = useGitStore((state) => state.directories);
 
+  const sync = useSync();
   const syncSessions = useSessions();
   const [globalActiveSessions, setGlobalActiveSessions] = React.useState<Session[]>([]);
   const [archivedSessions, setArchivedSessions] = React.useState<Session[]>([]);
@@ -1136,7 +1139,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     [activeNowEntries, sessions],
   );
 
-  // Session prefetch removed — sync bootstrap handles message loading.
+  // Prefetch is wired below, after recentSessionIds is computed.
 
   const activitySections = React.useMemo(() => {
     const toItem = (session: Session) => {
@@ -1158,6 +1161,15 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   const recentSessionIds = React.useMemo(() => {
     return new Set(activitySections.flatMap((section) => section.items.map((item) => item.node.session.id)));
   }, [activitySections]);
+
+  const recentSessionIdsList = React.useMemo(() => [...recentSessionIds], [recentSessionIds]);
+
+  useSessionPrefetch({
+    currentSessionId,
+    sortedSessions,
+    recentSessionIds: recentSessionIdsList,
+    loadMessages: sync.syncSession,
+  });
 
   const sectionsForSidebarRender = React.useMemo(() => {
     if (!isVSCode || hasSessionSearchQuery || recentSessionIds.size === 0) {

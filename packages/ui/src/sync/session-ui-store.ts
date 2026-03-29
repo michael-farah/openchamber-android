@@ -35,6 +35,10 @@ import {
 } from "./sync-refs"
 import { markSessionViewed } from "./notification-store"
 import { setActiveSession } from "./sync-context"
+import {
+  deleteSession as deleteSessionAction,
+  archiveSession as archiveSessionAction,
+} from "./session-actions"
 
 export type { AttachedFile }
 
@@ -1022,53 +1026,26 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   // ---------------------------------------------------------------------------
   // deleteSession — calls SDK, SSE event updates child store
   // ---------------------------------------------------------------------------
-  deleteSession: async (id) => {
-    try {
-      const sdk = opencodeClient.getSdkClient()
-      await sdk.session.delete({ sessionID: id })
-      if (get().currentSessionId === id) {
-        set({ currentSessionId: null })
-      }
-      return true
-    } catch (e) {
-      console.error("[session-ui-store] deleteSession failed", e)
-      return false
-    }
-  },
+  deleteSession: (id) => deleteSessionAction(id),
 
   deleteSessions: async (ids) => {
     const deletedIds: string[] = []
     const failedIds: string[] = []
     for (const id of ids) {
-      const ok = await get().deleteSession(id)
+      const ok = await deleteSessionAction(id)
       if (ok) deletedIds.push(id)
       else failedIds.push(id)
     }
     return { deletedIds, failedIds }
   },
 
-  // ---------------------------------------------------------------------------
-  // archiveSession — calls SDK, SSE event updates child store
-  // ---------------------------------------------------------------------------
-  archiveSession: async (id) => {
-    try {
-      const sdk = opencodeClient.getSdkClient()
-      await sdk.session.update({ sessionID: id, time: { archived: Date.now() } })
-      if (get().currentSessionId === id) {
-        set({ currentSessionId: null })
-      }
-      return true
-    } catch (e) {
-      console.error("[session-ui-store] archiveSession failed", e)
-      return false
-    }
-  },
+  archiveSession: (id) => archiveSessionAction(id),
 
   archiveSessions: async (ids) => {
     const archivedIds: string[] = []
     const failedIds: string[] = []
     for (const id of ids) {
-      const ok = await get().archiveSession(id)
+      const ok = await archiveSessionAction(id)
       if (ok) archivedIds.push(id)
       else failedIds.push(id)
     }
