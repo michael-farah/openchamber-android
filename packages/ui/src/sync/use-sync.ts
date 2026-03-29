@@ -12,6 +12,12 @@ import {
 import { useDirectoryStore, useSyncSDK, useSyncDirectory, useChildStoreManager } from "./sync-context"
 import { dropSessionCaches } from "./session-cache"
 import { stripMessageDiffSnapshots } from "./sanitize"
+import {
+  shouldSkipSessionPrefetch,
+  getSessionPrefetch,
+  setSessionPrefetch,
+  clearSessionPrefetch,
+} from "./session-prefetch-cache"
 
 const SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
 const MESSAGE_PAGE_SIZE = 200
@@ -89,11 +95,12 @@ export function useSync() {
       dropSessionCaches(draft, sessionIDs)
       dirStore.setState(draft)
 
-      // Clear meta + optimistic for evicted sessions
+      // Clear meta + optimistic + prefetch cache for evicted sessions
       for (const id of sessionIDs) {
         optimistic.current.delete(`${dir}\n${id}`)
         meta.current.delete(`${dir}\n${id}`)
       }
+      clearSessionPrefetch(dir, sessionIDs)
     },
     [childStores],
   )
@@ -220,22 +227,38 @@ export function useSync() {
           ? mergeMessages(cached, merged.session)
           : merged.session
 
-        // Build part updates
+        // Build part updates — preserve existing references on prepend to avoid flicker
+        const isPrepend = options?.mode === "prepend"
+        let partsChanged = false
         const partUpdate: Record<string, Part[]> = { ...current.part }
         for (const p of merged.part) {
+          if (isPrepend && partUpdate[p.id]) continue // already loaded
           const filtered = p.part.filter((x: Part) => !SKIP_PARTS.has(x.type))
-          if (filtered.length) partUpdate[p.id] = filtered
+          if (filtered.length) {
+            partUpdate[p.id] = filtered
+            partsChanged = true
+          }
         }
 
-        store.setState({
-          message: { ...current.message, [sessionID]: messages },
-          part: partUpdate,
-        })
+        const patch: Record<string, unknown> = {
+          message: messages !== cached ? { ...current.message, [sessionID]: messages } : current.message,
+        }
+        if (!isPrepend || partsChanged) {
+          patch.part = partUpdate
+        }
+        store.setState(patch)
         setMetaFor(sessionID, {
           limit: messages.length,
           cursor: merged.cursor,
           complete: merged.complete,
           loading: false,
+        })
+        setSessionPrefetch({
+          directory,
+          sessionID,
+          limit: messages.length,
+          cursor: merged.cursor,
+          complete: merged.complete,
         })
       } catch {
         setMetaFor(sessionID, { loading: false })
@@ -259,6 +282,16 @@ export function useSync() {
       const cached = current.message[sessionID] !== undefined && m.limit > 0
       const hasSession = Binary.search(current.session, sessionID, (s) => s.id).found
       if (cached && hasSession && !force) return
+
+      // Skip if recently fetched (TTL)
+      if (!force) {
+        const prefetchInfo = getSessionPrefetch(directory, sessionID)
+        if (shouldSkipSessionPrefetch({
+          hasMessages: cached,
+          info: prefetchInfo,
+          pageSize: MESSAGE_PAGE_SIZE,
+        })) return
+      }
 
       const promise = (async () => {
         // Fetch session info if needed

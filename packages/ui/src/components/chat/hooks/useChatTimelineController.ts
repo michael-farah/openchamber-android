@@ -180,6 +180,42 @@ export const useChatTimelineController = ({
         return windowMessagesByTurn(messages, turnWindowModel, turnStart);
     }, [messages, turnStart, turnWindowModel]);
 
+    // --- Synchronous scroll compensation for load-more / reveal ---
+    // fetchOlderHistory and revealBufferedTurns store a snapshot here
+    // before triggering the state change. useLayoutEffect consumes it
+    // after React commits new DOM — before the browser paints.
+    const prePrependScrollRef = React.useRef<{
+        height: number;
+        top: number;
+        anchor: ViewportAnchor | null;
+    } | null>(null);
+
+    React.useLayoutEffect(() => {
+        const snap = prePrependScrollRef.current;
+        const container = scrollRef.current;
+        if (!snap || !container) return;
+        prePrependScrollRef.current = null;
+
+        // Try anchor-based restoration first (pixel-perfect)
+        if (snap.anchor) {
+            const anchorEl = container.querySelector<HTMLElement>(
+                `[data-message-id="${snap.anchor.messageId}"]`,
+            );
+            if (anchorEl) {
+                const containerRect = container.getBoundingClientRect();
+                const anchorTop = anchorEl.getBoundingClientRect().top - containerRect.top;
+                container.scrollTop += anchorTop - snap.anchor.offsetTop;
+                return;
+            }
+        }
+
+        // Fallback: height-delta compensation
+        const delta = container.scrollHeight - snap.height;
+        if (delta > 0) {
+            container.scrollTop = snap.top + delta;
+        }
+    }, [renderedMessages, scrollRef]);
+
     const captureViewportAnchor = React.useCallback((): ViewportAnchor | null => {
         return messageListRef.current?.captureViewportAnchor() ?? null;
     }, [messageListRef]);
@@ -188,66 +224,19 @@ export const useChatTimelineController = ({
         return messageListRef.current?.restoreViewportAnchor(anchor) ?? false;
     }, [messageListRef]);
 
-    const restoreViewportWithFallback = React.useCallback((input: {
-        anchor: ViewportAnchor | null;
-        previousHeight: number | null;
-        previousTop: number | null;
-    }) => {
-        const container = scrollRef.current;
-        if (input.anchor && restoreViewportAnchor(input.anchor)) {
-            return;
-        }
-
-        if (!container || input.previousHeight === null || input.previousTop === null) {
-            return;
-        }
-
-        const heightDelta = container.scrollHeight - input.previousHeight;
-        if (heightDelta !== 0) {
-            container.scrollTop = input.previousTop + heightDelta;
-        }
-    }, [restoreViewportAnchor, scrollRef]);
-
-    const restoreViewportAfterSettle = React.useCallback(async (input: {
-        anchor: ViewportAnchor | null;
-        previousHeight: number | null;
-        previousTop: number | null;
-    }) => {
-        restoreViewportWithFallback(input);
-
-        if (!input.anchor) {
-            return;
-        }
-
-        await waitForFrames(1);
-
-        const container = scrollRef.current;
-        if (!container) {
-            return;
-        }
-
-        const anchorElement = container.querySelector<HTMLElement>(`[data-message-id="${input.anchor.messageId}"]`);
-        if (!anchorElement) {
-            return;
-        }
-
-        const containerRect = container.getBoundingClientRect();
-        const anchorTop = anchorElement.getBoundingClientRect().top - containerRect.top;
-        const drift = anchorTop - input.anchor.offsetTop;
-        if (Math.abs(drift) > 1) {
-            restoreViewportAnchor(input.anchor);
-        }
-    }, [restoreViewportAnchor, restoreViewportWithFallback, scrollRef]);
-
     const revealBufferedTurns = React.useCallback(async (): Promise<boolean> => {
         if (turnStartRef.current <= 0 || pendingRevealWorkRef.current) {
             return false;
         }
 
-        const anchor = captureViewportAnchor();
         const container = scrollRef.current;
-        const previousHeight = container?.scrollHeight ?? null;
-        const previousTop = container?.scrollTop ?? null;
+        if (container) {
+            prePrependScrollRef.current = {
+                height: container.scrollHeight,
+                top: container.scrollTop,
+                anchor: captureViewportAnchor(),
+            };
+        }
 
         setPendingRevealWork(true);
         setTurnStart((current) => {
@@ -255,15 +244,10 @@ export const useChatTimelineController = ({
             return next > 0 ? next : 0;
         });
 
-        await waitForFrames(2);
-        await restoreViewportAfterSettle({
-            anchor,
-            previousHeight,
-            previousTop,
-        });
+        await waitForFrames(1);
         setPendingRevealWork(false);
         return true;
-    }, [captureViewportAnchor, restoreViewportAfterSettle, scrollRef]);
+    }, [captureViewportAnchor, scrollRef]);
 
     const fetchOlderHistory = React.useCallback(async (input: {
         preserveViewport: boolean;
@@ -275,14 +259,21 @@ export const useChatTimelineController = ({
             return false;
         }
 
-        const anchor = input.preserveViewport ? captureViewportAnchor() : null;
         const container = scrollRef.current;
-        const previousHeight = input.preserveViewport ? (container?.scrollHeight ?? null) : null;
-        const previousTop = input.preserveViewport ? (container?.scrollTop ?? null) : null;
         const beforeMessages = messagesRef.current;
         const beforeMessageCount = beforeMessages.length;
         const beforeOldestMessageId = beforeMessages[0]?.info?.id ?? null;
         const beforeLimit = historyMetaRef.current?.limit ?? getMemoryLimits().HISTORICAL_MESSAGES;
+
+        // Store scroll snapshot BEFORE the fetch so useLayoutEffect can
+        // compensate synchronously when React commits the new messages.
+        if (input.preserveViewport && container) {
+            prePrependScrollRef.current = {
+                height: container.scrollHeight,
+                top: container.scrollTop,
+                anchor: captureViewportAnchor(),
+            };
+        }
 
         setIsLoadingOlder(true);
 
@@ -304,20 +295,11 @@ export const useChatTimelineController = ({
                     && typeof afterOldestMessageId === 'string'
                     && beforeOldestMessageId !== afterOldestMessageId);
 
-            if (input.preserveViewport) {
-                await waitForFrames(1);
-                await restoreViewportAfterSettle({
-                    anchor,
-                    previousHeight,
-                    previousTop,
-                });
-            }
-
             return historyGrew || afterLimit > beforeLimit;
         } finally {
             setIsLoadingOlder(false);
         }
-    }, [captureViewportAnchor, loadMoreMessages, restoreViewportAfterSettle, scrollRef]);
+    }, [captureViewportAnchor, loadMoreMessages, scrollRef]);
 
     const loadEarlier = React.useCallback(async () => {
         if (await revealBufferedTurns()) {

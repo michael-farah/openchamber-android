@@ -34,6 +34,7 @@ import {
     useSessionStatus,
 } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
+import { getAllSyncSessions } from '@/sync/sync-refs';
 
 const EMPTY_MESSAGES: Array<{ info: Message; parts: Part[] }> = [];
 const EMPTY_PERMISSIONS: PermissionRequest[] = [];
@@ -182,7 +183,9 @@ export const ChatContainer: React.FC = () => {
         const current = sessions.find((session) => session.id === currentSessionId);
         const parentID = current?.parentID;
         if (!parentID) return null;
-        return sessions.find((session) => session.id === parentID) ?? null;
+        return sessions.find((session) => session.id === parentID)
+            ?? getAllSyncSessions().find((session) => session.id === parentID)
+            ?? null;
     }, [currentSessionId, sessions]);
 
     const handleReturnToParentSession = React.useCallback(() => {

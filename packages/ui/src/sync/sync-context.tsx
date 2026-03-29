@@ -524,8 +524,9 @@ export function useSessionMessageRecords(sessionID: string, directory?: string) 
       const next: Record<string, Part[]> = {}
       for (const id of messageIds) {
         const parts = state.part[id] ?? EMPTY_PARTS
-        next[id] = parts
-        if (parts !== prev[id]) changed = true
+        // Preserve existing reference if parts haven't changed in the store
+        next[id] = prev[id] === parts ? prev[id] : parts
+        if (next[id] !== prev[id]) changed = true
       }
       if (changed || Object.keys(prev).length !== messageIds.length) {
         prevPartsRef.current = next

@@ -110,9 +110,18 @@ export function applyOptimisticRemove(draft: OptimisticStore, input: OptimisticR
   delete draft.part[input.messageID]
 }
 
-/** Merge two sorted message arrays by id, deduplicating */
+/** Merge two sorted message arrays by id, deduplicating.
+ *  Preserves references from `a` for items that already exist — avoids
+ *  unnecessary React re-renders when prepending older history. */
 export function mergeMessages<T extends { id: string }>(a: readonly T[], b: readonly T[]) {
-  const map = new Map(a.map((item) => [item.id, item] as const))
-  for (const item of b) map.set(item.id, item)
-  return [...map.values()].sort((x, y) => cmp(x.id, y.id))
+  const existing = new Map(a.map((item) => [item.id, item] as const))
+  let changed = false
+  for (const item of b) {
+    if (!existing.has(item.id)) {
+      existing.set(item.id, item)
+      changed = true
+    }
+  }
+  if (!changed) return a as T[]
+  return [...existing.values()].sort((x, y) => cmp(x.id, y.id))
 }
