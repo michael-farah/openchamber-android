@@ -9,6 +9,7 @@ import { useSessionUIStore } from "./session-ui-store"
 import { useInputStore } from "./input-store"
 import type { DirectoryStore } from "./child-store"
 import type { StoreApi } from "zustand"
+import { opencodeClient } from "@/lib/opencode/client"
 
 // Reference set by SyncProvider — allows actions to access SDK and stores
 let _sdk: OpencodeClient | null = null
@@ -49,6 +50,16 @@ function dirStore() {
 
 function dir() {
   return _getDirectory() || undefined
+}
+
+function getSessionReplyClient(sessionId?: string): OpencodeClient {
+  const directory = sessionId
+    ? useSessionUIStore.getState().getDirectoryForSession(sessionId)
+    : null
+  if (directory) {
+    return opencodeClient.getScopedSdkClient(directory)
+  }
+  return sdk()
 }
 
 // ---------------------------------------------------------------------------
@@ -304,24 +315,30 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export async function respondToPermission(
-  _sessionId: string,
+  sessionId: string,
   requestId: string,
   response: "once" | "always" | "reject",
 ): Promise<void> {
-  await sdk().permission.reply({
+  const result = await getSessionReplyClient(sessionId).permission.reply({
     requestID: requestId,
     reply: response,
   })
+  if (!result.data) {
+    throw new Error("Permission reply failed")
+  }
 }
 
 export async function dismissPermission(
-  _sessionId: string,
+  sessionId: string,
   requestId: string,
 ): Promise<void> {
-  await sdk().permission.reply({
+  const result = await getSessionReplyClient(sessionId).permission.reply({
     requestID: requestId,
     reply: "reject",
   })
+  if (!result.data) {
+    throw new Error("Permission dismissal failed")
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -329,23 +346,29 @@ export async function dismissPermission(
 // ---------------------------------------------------------------------------
 
 export async function respondToQuestion(
-  _sessionId: string,
+  sessionId: string,
   requestId: string,
   answers: string[] | string[][],
 ): Promise<void> {
-  await sdk().question.reply({
+  const result = await getSessionReplyClient(sessionId).question.reply({
     requestID: requestId,
     answers: answers as Array<Array<string>>,
   })
+  if (!result.data) {
+    throw new Error("Question reply failed")
+  }
 }
 
 export async function rejectQuestion(
-  _sessionId: string,
+  sessionId: string,
   requestId: string,
 ): Promise<void> {
-  await sdk().question.reject({
+  const result = await getSessionReplyClient(sessionId).question.reject({
     requestID: requestId,
   })
+  if (!result.data) {
+    throw new Error("Question rejection failed")
+  }
 }
 
 // ---------------------------------------------------------------------------

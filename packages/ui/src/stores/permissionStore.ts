@@ -2,10 +2,15 @@ import { create } from "zustand";
 import { devtools, persist, createJSONStorage } from "zustand/middleware";
 import type { Session } from "@opencode-ai/sdk/v2/client";
 import {
+    autoRespondsPermission,
+    normalizeDirectory,
+    sessionAcceptKey,
     type PermissionAutoAcceptMap,
 } from "./utils/permissionAutoAccept";
 import { getSafeStorage } from "./utils/safeStorage";
-import { getSyncSessions } from "@/sync/sync-refs";
+import { getAllSyncSessions } from "@/sync/sync-refs";
+import { opencodeClient } from "@/lib/opencode/client";
+import { useSessionUIStore } from "@/sync/session-ui-store";
 
 interface PermissionState {
     autoAccept: PermissionAutoAcceptMap;
@@ -40,12 +45,24 @@ const autoRespondsPermissionBySession = (
     sessions: Session[],
     sessionID: string,
 ): boolean => {
-    for (const id of resolveLineage(sessionID, sessions)) {
-        if (id in autoAccept) {
-            return autoAccept[id] === true;
+    const targetSession = sessions.find((session) => session.id === sessionID);
+    const mappedDirectory = useSessionUIStore.getState().getDirectoryForSession(sessionID);
+    const directory = normalizeDirectory(mappedDirectory ?? (targetSession as Session & { directory?: string | null })?.directory ?? null);
+    if (!directory) {
+        for (const id of resolveLineage(sessionID, sessions)) {
+            if (id in autoAccept) {
+                return autoAccept[id] === true;
+            }
         }
+        return false;
     }
-    return false;
+
+    return autoRespondsPermission({
+        autoAccept,
+        sessions,
+        sessionID,
+        directory,
+    });
 };
 
 const getStorage = () => createJSONStorage(() => getSafeStorage());
@@ -61,7 +78,7 @@ export const usePermissionStore = create<PermissionStore>()(
                         return false;
                     }
 
-                    const sessions = getSyncSessions();
+                    const sessions = getAllSyncSessions();
                     return autoRespondsPermissionBySession(get().autoAccept, sessions, sessionId);
                 },
 
@@ -70,12 +87,33 @@ export const usePermissionStore = create<PermissionStore>()(
                         return;
                     }
 
-                    set((state) => ({
-                        autoAccept: {
-                            ...state.autoAccept,
-                            [sessionId]: enabled,
-                        },
-                    }));
+                    const sessions = getAllSyncSessions();
+                    const targetSession = sessions.find((session) => session.id === sessionId);
+                    const mappedDirectory = useSessionUIStore.getState().getDirectoryForSession(sessionId);
+                    const directory = normalizeDirectory(mappedDirectory ?? (targetSession as Session & { directory?: string | null })?.directory ?? null);
+                    const key = directory ? sessionAcceptKey(sessionId, directory) : sessionId;
+
+                    set((state) => {
+                        const autoAccept = { ...state.autoAccept };
+                        if (directory) {
+                            delete autoAccept[sessionId];
+                        }
+                        autoAccept[key] = enabled;
+                        return { autoAccept };
+                    });
+
+                    if (!enabled || !directory) {
+                        return;
+                    }
+
+                    const pending = await opencodeClient.listPendingPermissions({ directories: [directory] });
+                    const client = opencodeClient.getScopedSdkClient(directory);
+                    const sessionLineage = new Set(resolveLineage(sessionId, sessions));
+                    await Promise.all(
+                        pending
+                            .filter((permission) => sessionLineage.has(permission.sessionID))
+                            .map((permission) => client.permission.reply({ requestID: permission.id, reply: "once" }).catch(() => undefined)),
+                    );
                 },
             }),
             {

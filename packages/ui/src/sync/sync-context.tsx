@@ -14,12 +14,15 @@ import { updateStreamingState } from "./streaming"
 import { setActionRefs } from "./session-actions"
 import { setSyncRefs } from "./sync-refs"
 import { opencodeClient } from "@/lib/opencode/client"
+import { usePermissionStore } from "@/stores/permissionStore"
+import { autoRespondsPermission, normalizeDirectory } from "@/stores/utils/permissionAutoAccept"
 import { appendNotification } from "./notification-store"
 import type { State } from "./types"
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
 import type { PermissionRequest } from "@/types/permission"
 import type { QuestionRequest } from "@/types/question"
 import { create } from "zustand"
+import * as sessionActions from "./session-actions"
 
 // ---------------------------------------------------------------------------
 // Context
@@ -245,6 +248,20 @@ function handleEvent(
   if (payload.type === "session.status") {
     const props = payload.properties as { sessionID: string; status: SessionStatus }
     setGlobalSessionStatus(props.sessionID, props.status)
+  }
+
+  if (payload.type === "permission.asked") {
+    const normalizedDirectory = normalizeDirectory(directory)
+    if (!normalizedDirectory) {
+      return
+    }
+
+    const permission = payload.properties as PermissionRequest
+    const sessions = store.getState().session
+    const autoAccept = usePermissionStore.getState().autoAccept
+    if (autoRespondsPermission({ autoAccept, sessions, sessionID: permission.sessionID, directory: normalizedDirectory })) {
+      void sessionActions.respondToPermission(permission.sessionID, permission.id, "once").catch(() => undefined)
+    }
   }
 }
 
