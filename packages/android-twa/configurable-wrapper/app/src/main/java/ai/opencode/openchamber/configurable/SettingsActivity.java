@@ -13,6 +13,8 @@ import android.widget.Button;
 import android.widget.TextView;
 import android.net.Uri;
 
+import com.google.android.material.textfield.TextInputLayout;
+
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.util.Arrays;
@@ -23,11 +25,12 @@ import org.json.JSONException;
 
 public class SettingsActivity extends AppCompatActivity {
 
-    private AutoCompleteTextView urlInput;
-    private Button connectButton;
-    private Button clearButton;
-    private TextView errorText;
-    private SharedPreferences prefs;
+  private TextInputLayout urlInputLayout;
+  private AutoCompleteTextView urlInput;
+  private Button connectButton;
+  private Button clearButton;
+  private TextView errorText;
+  private SharedPreferences prefs;
 
     public static final String EXTRA_DEFAULT_URL_HINT = "default_url_hint";
 
@@ -38,22 +41,22 @@ public class SettingsActivity extends AppCompatActivity {
 
         prefs = getSharedPreferences(App.PREFS_NAME, MODE_PRIVATE);
 
-        urlInput = findViewById(R.id.url_input);
-        connectButton = findViewById(R.id.connect_button);
-        clearButton = findViewById(R.id.clear_button);
-        errorText = findViewById(R.id.error_text);
+  urlInputLayout = findViewById(R.id.url_input_layout);
+  urlInput = findViewById(R.id.url_input);
+  connectButton = findViewById(R.id.connect_button);
+  clearButton = findViewById(R.id.clear_button);
+  errorText = findViewById(R.id.error_text);
 
-        String savedUrl = prefs.getString(App.KEY_SERVER_URL, "");
-        if (!savedUrl.isEmpty()) {
-            urlInput.setText(savedUrl);
-        } else {
-            String hintUrl = getIntent().getStringExtra(EXTRA_DEFAULT_URL_HINT);
-            if (hintUrl != null && !hintUrl.isEmpty()) {
-                urlInput.setHint(hintUrl);
-            } else {
-                urlInput.setHint(getString(R.string.url_hint));
-            }
-        }
+  String savedUrl = prefs.getString(App.KEY_SERVER_URL, "");
+  if (!savedUrl.isEmpty()) {
+    urlInput.setText(savedUrl);
+  } else {
+    String hintUrl = getIntent().getStringExtra(EXTRA_DEFAULT_URL_HINT);
+    if (hintUrl != null && !hintUrl.isEmpty()) {
+      urlInputLayout.setHint(hintUrl);
+    }
+    // Default hint is already set via android:hint in XML
+  }
 
         setupUrlHistory();
         setupButtons();

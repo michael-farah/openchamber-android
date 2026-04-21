@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:background="@color/bg_dark"
+  android:fillViewport="true">
+
+  <LinearLayout
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="@color/bg_dark"
-    android:gravity="center_horizontal"
+    android:layout_height="wrap_content"
+    android:gravity="center_horizontal|center_vertical"
     android:orientation="vertical"
     android:padding="32dp">
 
@@ -29,33 +34,41 @@
         android:layout_marginBottom="32dp"
         android:gravity="center"
         android:text="@string/settings_description"
-        android:textColor="#B0B0B0"
+    android:textColor="@color/text_secondary"
         android:textSize="16sp" />
 
-    <com.google.android.material.textfield.TextInputLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="16dp"
-        android:hint="@string/url_hint"
-        android:textColorHint="#808080">
+  <com.google.android.material.textfield.TextInputLayout
+    android:id="@+id/url_input_layout"
+    style="@style/Widget.MaterialComponents.TextInputLayout.FilledBox"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="16dp"
+    android:hint="@string/url_hint"
+    android:textColorHint="@color/text_secondary"
+    app:boxBackgroundColor="@color/bg_surface"
+    app:boxStrokeColor="@color/primary"
+    app:boxStrokeWidthFocused="2dp"
+    app:boxCornerRadiusTopStart="8dp"
+    app:boxCornerRadiusTopEnd="8dp"
+    app:hintTextColor="@color/primary"
+    app:placeholderTextColor="@color/text_secondary">
 
-        <AutoCompleteTextView
-            android:id="@+id/url_input"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:backgroundTint="@color/primary"
-            android:inputType="textUri"
-            android:singleLine="true"
-            android:textColor="#FFFFFF"
-            android:textSize="16sp" />
-    </com.google.android.material.textfield.TextInputLayout>
+    <AutoCompleteTextView
+      android:id="@+id/url_input"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:inputType="textUri"
+      android:singleLine="true"
+      android:textColor="@color/text_primary"
+      android:textSize="16sp" />
+  </com.google.android.material.textfield.TextInputLayout>
 
     <TextView
         android:id="@+id/error_text"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginBottom="8dp"
-        android:textColor="#FF6B6B"
+    android:textColor="@color/error"
         android:textSize="14sp"
         android:visibility="gone" />
 
@@ -79,6 +92,8 @@
         android:textAllCaps="false"
         android:textColor="@color/primary"
         android:textSize="16sp"
-        android:strokeColor="@color/primary" />
+    app:strokeColor="@color/primary"
 
-</LinearLayout>
+  </LinearLayout>
+
+</ScrollView>
