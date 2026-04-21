@@ -226,9 +226,14 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPageStarted(WebView view, String pageUrl, android.graphics.Bitmap favicon) {
                 super.onPageStarted(view, pageUrl, favicon);
-                if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                String savedUrl = getSavedUrl();
+                if (savedUrl != null && pageUrl != null
+                        && Uri.parse(pageUrl).getHost() != null
+                        && Uri.parse(pageUrl).getHost().equals(Uri.parse(savedUrl).getHost())) {
                     view.evaluateJavascript(getNotificationBridgeJs(), null);
                 }
+            }
             }
 
             @Override
