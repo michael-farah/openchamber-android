@@ -98,18 +98,24 @@ public class SettingsActivity extends AppCompatActivity {
                         return;
                     }
                     urlInput.setText(url);
-                    if (isValidUrl(url)) {
-                        saveUrl(url);
-                        Intent intent = new Intent(SettingsActivity.this, MainActivity.class);
-                        intent.addFlags(
-                                Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-                        startActivity(intent);
-                        finish();
-                    } else {
+                    if (!isValidUrl(url)) {
                         if (errorText.getVisibility() != View.VISIBLE) {
                             errorText.setVisibility(View.VISIBLE);
                             errorText.setText(R.string.invalid_url);
                         }
+                        return;
+                    }
+                    if (url.startsWith("http://") && !isLocalHost(Uri.parse(url).getHost())) {
+                        new androidx.appcompat.app.AlertDialog.Builder(this)
+                                .setTitle(R.string.http_warning_title)
+                                .setMessage(R.string.http_warning_message)
+                                .setPositiveButton(
+                                        R.string.http_warning_accept,
+                                        (d, w) -> connectToServer(url))
+                                .setNegativeButton(android.R.string.cancel, null)
+                                .show();
+                    } else {
+                        connectToServer(url);
                     }
                 });
 
@@ -148,6 +154,18 @@ public class SettingsActivity extends AppCompatActivity {
             return false;
         }
         return true;
+    }
+
+    private boolean isLocalHost(String host) {
+        return "localhost".equals(host) || "127.0.0.1".equals(host) || "10.0.2.2".equals(host);
+    }
+
+    private void connectToServer(String url) {
+        saveUrl(url);
+        Intent intent = new Intent(SettingsActivity.this, MainActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        startActivity(intent);
+        finish();
     }
 
     private void saveUrl(String url) {
