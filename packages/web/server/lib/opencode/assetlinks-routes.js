@@ -9,10 +9,10 @@ export const registerAssetlinksRoute = (app, dependencies) => {
       ? process.env.TWA_PACKAGE_NAME.trim()
       : '';
 
-    if (!sha256Fingerprint || !packageName) {
-      next();
-      return;
-    }
+	if (!sha256Fingerprint || !packageName) {
+		res.status(404).json({ error: 'assetlinks not configured' });
+		return;
+	}
 
     const assetlinks = [{
       relation: ['delegate_permission/common.handle_all_urls'],

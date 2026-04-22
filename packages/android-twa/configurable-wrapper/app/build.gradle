@@ -41,9 +41,9 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
-        debug {
-            signingConfig signingConfigs.release
-        }
+	debug {
+		// uses the default Android debug keystore; no local.properties required
+	}
     }
 
     compileOptions {
