@@ -12,15 +12,16 @@
  */
 
 import { execSync } from 'child_process'
-import { checkPrerequisites, isQuietMode, isJsonMode } from './check-prerequisites.mjs'
+import { isQuietMode, isJsonMode, printJson, runIfMain } from './cli-output.mjs'
+import { checkPrerequisites } from './check-prerequisites.mjs'
 
 function main() {
   const { canBuild, reasons } = checkPrerequisites()
 
   if (!canBuild) {
-    if (isJsonMode()) {
-      console.log(JSON.stringify({ ok: true, canBuild: false, skipped: true, reasons }))
-    } else if (!isQuietMode()) {
+ if (isJsonMode()) {
+ printJson({ canBuild: false, skipped: true, reasons })
+ } else if (!isQuietMode()) {
       console.log('Skipping android-twa build (prerequisites not met):')
       for (const reason of reasons) {
         console.log(`  - ${reason}`)
@@ -46,6 +47,4 @@ function main() {
 }
 
 // Run main only when executed directly
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith('build-with-check.mjs')) {
-  main()
-}
+runIfMain(import.meta.url, main)

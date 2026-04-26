@@ -1,23 +1,11 @@
 #!/usr/bin/env node
-import { intro, outro, text, confirm, select, password, log, spinner, cancel, isCancel } from '@clack/prompts'
+import { intro, outro, text, confirm, log, spinner, cancel, isCancel, isQuietMode, isJsonMode, canPrompt, shouldRenderHumanOutput, printJson, formatError, runIfMain } from './cli-output.mjs'
 import { execFileSync, execSync } from 'child_process'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { resolve } from 'path'
-
-function isQuietMode() {
-  return process.argv.includes('--quiet')
-}
-
-function isJsonMode() {
-  return process.argv.includes('--json')
-}
 
 function isValidateOnly() {
   return process.argv.includes('--validate-only')
-}
-
-function canPrompt() {
-  return process.stdout.isTTY && !isQuietMode() && !isJsonMode()
 }
 
 function validateHttps(url) {
@@ -160,19 +148,19 @@ async function runBubblewrapInit(config) {
     // - If run from repo root, we need to use packages/android-twa/
     // Check if we're already in the android-twa directory by looking for package.json
     const cwd = process.cwd()
-    const isInAndroidTwa = existsSync(resolve(cwd, 'package.json')) && 
+    const isInAndroidTwa = existsSync(resolve(cwd, 'package.json')) &&
       existsSync(resolve(cwd, 'scripts'))
     const twaDir = isInAndroidTwa ? cwd : resolve(cwd, 'packages/android-twa')
-    
+
     if (!existsSync(twaDir)) {
       mkdirSync(twaDir, { recursive: true })
     }
 
     // Run bubblewrap init
     execFileSync('bubblewrap', args, {
-  cwd: twaDir,
-  stdio: 'inherit'
-})
+      cwd: twaDir,
+      stdio: 'inherit'
+    })
 
     const outputDir = resolve(twaDir, 'output')
     spin.stop('TWA project initialized')
@@ -184,44 +172,33 @@ async function runBubblewrapInit(config) {
 }
 
 async function main() {
-  try {
-    loadEnv()
-    await ensureBubblewrapInstalled()
-    const config = await collectConfig()
+  loadEnv()
+  await ensureBubblewrapInstalled()
+  const config = await collectConfig()
 
-    if (isValidateOnly()) {
-      // Only validate the manifest URL, don't initialize the project
-      execFileSync('bubblewrap', ['validate', '--url', config.manifestUrl], {
-  stdio: canPrompt() ? 'inherit' : 'pipe'
-})
-      if (isJsonMode()) {
-        console.log(JSON.stringify({ ok: true, message: 'Manifest URL is valid!' }))
-      } else if (canPrompt()) {
-        outro('Manifest URL is valid!')
-      } else if (!isQuietMode()) {
-        console.log('Manifest URL is valid!')
-      }
-      return
-    }
-
-    await runBubblewrapInit(config)
-    
+  if (isValidateOnly()) {
+    // Only validate the manifest URL, don't initialize the project
+    execFileSync('bubblewrap', ['validate', '--url', config.manifestUrl], {
+      stdio: canPrompt() ? 'inherit' : 'pipe'
+    })
     if (isJsonMode()) {
-      console.log(JSON.stringify({ ok: true, message: 'TWA project ready!' }))
+      printJson({ ok: true, message: 'Manifest URL is valid!' })
     } else if (canPrompt()) {
-      outro('TWA project ready!')
+      outro('Manifest URL is valid!')
     } else if (!isQuietMode()) {
-      console.log('TWA project ready!')
+      console.log('Manifest URL is valid!')
     }
-  } catch (error) {
-    if (isJsonMode()) {
-      console.log(JSON.stringify({ ok: false, error: error.message }))
-    } else if (canPrompt()) {
-      log.error(error.message)
-    } else {
-      console.error(error.message)
-    }
-    process.exit(1)
+    return
+  }
+
+  await runBubblewrapInit(config)
+
+  if (isJsonMode()) {
+    printJson({ ok: true, message: 'TWA project ready!' })
+  } else if (canPrompt()) {
+    outro('TWA project ready!')
+  } else if (!isQuietMode()) {
+    console.log('TWA project ready!')
   }
 }
 
@@ -232,12 +209,7 @@ export {
   validateManifestUrl,
   loadEnv,
   collectConfig,
-  isQuietMode,
-  isJsonMode,
-  canPrompt
 }
 
 // Run main only when executed directly (not when imported for testing)
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith('init-twa.mjs')) {
-  main()
-}
+runIfMain(import.meta.url, main)

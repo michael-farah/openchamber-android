@@ -3,29 +3,27 @@
  * Checks whether the prerequisites for building the Android TWA are met.
  *
  * Exit codes:
- *   0 — prerequisites met, proceed to build
- *   2 — prerequisites not met, skip (not an error for monorepo build)
+ * 0 — prerequisites met, proceed to build
+ * 2 — prerequisites not met, skip (not an error for monorepo build)
  *
  * Used in package.json scripts via the pattern:
- *   node scripts/check-prerequisites.mjs && bunx bubblewrap build || exit 0
+ * node scripts/check-prerequisites.mjs && bunx bubblewrap build || exit 0
  *
  * - If prerequisites met (exit 0): && runs bubblewrap
  * - If prerequisites not met (exit 2): && is skipped, || exit 0 ensures
  *   the overall script succeeds so `bun run --filter '*' build` continues
  *
  * Prerequisites checked:
- *   1. JDK 17+ available on PATH (or JAVA_HOME)
- *   2. TWA output directory exists (i.e. `init` has been run)
- *   3. Bubblewrap config exists with jdkPath set (prevents interactive prompt)
+ * 1. JDK 17+ available on PATH (or JAVA_HOME)
+ * 2. TWA output directory exists (i.e. `init` has been run)
+ * 3. Bubblewrap config exists with jdkPath set (prevents interactive prompt)
  */
 
 import { execSync } from 'child_process'
 import { existsSync, readFileSync } from 'fs'
 import { resolve, join } from 'path'
 import { homedir } from 'os'
-
-const isQuietMode = () => process.argv.includes('--quiet')
-const isJsonMode = () => process.argv.includes('--json')
+import { isQuietMode, isJsonMode, printJson, log, runIfMain } from './cli-output.mjs'
 
 /**
  * Check whether JDK 17+ is available.
@@ -146,20 +144,20 @@ function main() {
 
   if (canBuild) {
     if (isJsonMode()) {
-      console.log(JSON.stringify({ ok: true, canBuild: true }))
+      printJson({ ok: true, canBuild: true })
     }
     process.exit(0)
   }
 
   // Prerequisites not met — skip with informative message
   if (isJsonMode()) {
-    console.log(JSON.stringify({ ok: true, canBuild: false, skipped: true, reasons }))
+    printJson({ ok: true, canBuild: false, skipped: true, reasons })
   } else if (!isQuietMode()) {
     console.log('Skipping android-twa build (prerequisites not met):')
     for (const reason of reasons) {
-      console.log(`  - ${reason}`)
+      console.log(` - ${reason}`)
     }
-    console.log('  Run `bun run android:init && bun run android:build` when ready.')
+    console.log(' Run `bun run android:init && bun run android:build` when ready.')
   }
   process.exit(2)
 }
@@ -171,11 +169,7 @@ export {
   checkTwaProject,
   checkBubblewrapConfig,
   checkPrerequisites,
-  isQuietMode,
-  isJsonMode
 }
 
 // Run main only when executed directly
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith('check-prerequisites.mjs')) {
-  main()
-}
+runIfMain(import.meta.url, main)

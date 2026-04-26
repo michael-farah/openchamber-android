@@ -1,12 +1,8 @@
 #!/usr/bin/env node
-import { intro, outro, password, log, spinner, cancel, isCancel } from '@clack/prompts'
-import { execFileSync, execSync } from 'child_process'
+import { intro, outro, password, log, cancel, isCancel, isQuietMode, isJsonMode, canPrompt, shouldRenderHumanOutput, printJson, createSpinner, runIfMain } from './cli-output.mjs'
+import { execFileSync } from 'child_process'
 import { existsSync } from 'fs'
 import { resolve } from 'path'
-
-const isQuietMode = () => process.argv.includes('--quiet')
-const isJsonMode = () => process.argv.includes('--json')
-const canPrompt = () => process.stdout.isTTY && !isQuietMode() && !isJsonMode()
 
 function isBubblewrapInstalled() {
   try {
@@ -46,10 +42,8 @@ async function buildAab() {
     throw new Error('TWA project not found. Run `init` first.')
   }
 
-  const spin = spinner()
-  if (!isQuietMode() && !isJsonMode()) {
-    spin.start('Building Android App Bundle...')
-  }
+  const spin = createSpinner()
+  spin?.start('Building Android App Bundle...')
 
   try {
     if (!isBubblewrapInstalled()) {
@@ -60,47 +54,34 @@ async function buildAab() {
       stdio: canPrompt() ? 'inherit' : 'pipe'
     })
 
-    if (!isQuietMode() && !isJsonMode()) {
-      spin.stop('AAB built successfully')
+    spin?.stop('AAB built successfully')
+    if (shouldRenderHumanOutput()) {
       log.success(`AAB: packages/android-twa/output/app-release-bundle.aab`)
       log.info('Upload to Play Store: https://play.google.com/console')
     }
   } catch (error) {
-    if (!isQuietMode() && !isJsonMode()) {
-      spin.stop('Build failed')
-    }
+    spin?.stop('Build failed')
     throw error
   }
 }
 
 async function main() {
-  try {
-    if (!isJsonMode() && !isQuietMode()) {
-      intro('OpenChamber TWA AAB Build')
-    }
-    
-    const pwd = await getKeystorePassword()
-    process.env.BUBBLEWRAP_KEYSTORE_PASSWORD = pwd
-    process.env.BUBBLEWRAP_KEY_PASSWORD = pwd
-    
-    await buildAab()
-    
-    if (isJsonMode()) {
-      console.log(JSON.stringify({ ok: true, aab: 'packages/android-twa/output/app-release-bundle.aab' }))
-    } else if (isQuietMode()) {
-      console.log('packages/android-twa/output/app-release-bundle.aab')
-    } else {
-      outro('Ready for Play Store!')
-    }
-  } catch (error) {
-    if (isJsonMode()) {
-      console.log(JSON.stringify({ ok: false, error: error.message }))
-    } else if (isQuietMode()) {
-      console.error(error.message)
-    } else {
-      log.error(error.message)
-    }
-    process.exit(1)
+  if (shouldRenderHumanOutput()) {
+    intro('OpenChamber TWA AAB Build')
+  }
+
+  const pwd = await getKeystorePassword()
+  process.env.BUBBLEWRAP_KEYSTORE_PASSWORD = pwd
+  process.env.BUBBLEWRAP_KEY_PASSWORD = pwd
+
+  await buildAab()
+
+  if (isJsonMode()) {
+    printJson({ ok: true, aab: 'packages/android-twa/output/app-release-bundle.aab' })
+  } else if (isQuietMode()) {
+    console.log('packages/android-twa/output/app-release-bundle.aab')
+  } else {
+    outro('Ready for Play Store!')
   }
 }
 
@@ -109,12 +90,7 @@ export {
   getKeystorePassword,
   buildAab,
   isBubblewrapInstalled,
-  isQuietMode,
-  isJsonMode,
-  canPrompt
 }
 
 // Run main only when executed directly (not when imported for testing)
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith('build-aab.mjs')) {
-  main()
-}
+runIfMain(import.meta.url, main)
