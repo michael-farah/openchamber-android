@@ -1,6 +1,7 @@
 import React from 'react';
-import * as DialogPrimitive from '@radix-ui/react-dialog';
+import { Dialog } from '@base-ui/react/dialog';
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/lib/i18n';
 import { SettingsView } from './SettingsView';
 
 interface SettingsWindowProps {
@@ -13,6 +14,7 @@ interface SettingsWindowProps {
  * Used for desktop and web (non-mobile) environments.
  */
 export const SettingsWindow: React.FC<SettingsWindowProps> = ({ open, onOpenChange }) => {
+  const { t } = useI18n();
   const descriptionId = React.useId();
 
   const hasOpenFloatingMenu = React.useCallback(() => {
@@ -21,36 +23,35 @@ export const SettingsWindow: React.FC<SettingsWindowProps> = ({ open, onOpenChan
     }
 
     return Boolean(
-      document.querySelector('[data-slot="dropdown-menu-content"][data-state="open"], [data-slot="select-content"][data-state="open"]')
+      document.querySelector('[data-slot="dropdown-menu-content"][data-open], [data-slot="select-content"][data-open]')
     );
   }, []);
 
   return (
-    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
-      <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay
-          className="fixed inset-0 z-50 bg-black/50 dark:bg-black/75"
-        />
-        <DialogPrimitive.Content
+    <Dialog.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && hasOpenFloatingMenu()) return;
+        onOpenChange(next);
+      }}
+    >
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/50 dark:bg-black/75" />
+        <Dialog.Popup
           aria-describedby={descriptionId}
-          onInteractOutside={(event) => {
-            if (hasOpenFloatingMenu()) {
-              event.preventDefault();
-            }
-          }}
           className={cn(
             'fixed z-50 top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%]',
-            'w-[90vw] max-w-[960px] h-[85vh] max-h-[900px]',
+            'w-[90vw] max-w-[1200px] h-[85vh] max-h-[900px]',
             'rounded-xl border shadow-none overflow-hidden',
             'bg-background'
           )}
         >
-          <DialogPrimitive.Description id={descriptionId} className="sr-only">
-            OpenChamber settings window.
-          </DialogPrimitive.Description>
+          <Dialog.Description id={descriptionId} className="sr-only">
+            {t('settings.window.description')}
+          </Dialog.Description>
           <SettingsView onClose={() => onOpenChange(false)} isWindowed />
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 };

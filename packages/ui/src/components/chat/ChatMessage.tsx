@@ -26,12 +26,14 @@ import { filterVisibleParts } from './message/partUtils';
 import { normalizeUserDisplayParts } from './message/normalizeUserDisplayParts';
 import { flattenAssistantTextParts } from '@/lib/messages/messageText';
 import { isLikelyProviderAuthFailure, PROVIDER_AUTH_FAILURE_MESSAGE } from '@/lib/messages/providerAuthError';
+import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
 import type { TurnGroupingContext } from './lib/turns/types';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { FadeInOnReveal } from './message/FadeInOnReveal';
 import { streamPerfCount } from '@/stores/utils/streamDebug';
+import { areOptionalRenderRelevantMessagesEqual, areRenderRelevantMessagesEqual, areRelevantTurnGroupingContextsEqual } from './message/renderCompare';
 
-const ToolOutputDialog = React.lazy(() => import('./message/ToolOutputDialog'));
+const ToolOutputDialog = lazyWithChunkRecovery(() => import('./message/ToolOutputDialog'));
 
 const EXPANDED_TOOLS_CACHE_MAX = 4000;
 const expandedToolsStateCache = new Map<string, Set<string>>();
@@ -733,11 +735,14 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const handleCopyMessage = React.useCallback(async () => {
         const result = await copyTextToClipboard(messageTextContent);
         if (!result.ok) {
-            return;
+            return false;
         }
-        setCopiedMessage(true);
-        setTimeout(() => setCopiedMessage(false), 2000);
-    }, [messageTextContent]);
+        if (isUser) {
+            setCopiedMessage(true);
+            setTimeout(() => setCopiedMessage(false), 2000);
+        }
+        return true;
+    }, [isUser, messageTextContent]);
 
     const handleRevert = React.useCallback(() => {
         if (!sessionId || !message.info.id) return;
@@ -966,7 +971,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const assistantTopPaddingClass = !isUser && shouldShowHeader
         ? (stickyUserHeader ? (isMobile ? 'pt-4' : 'pt-6') : 'pt-0')
         : 'pt-0';
-    const userMessageRadius = 'var(--radius-lg)';
+    const userMessageRadius = 'var(--radius-xl)';
 
     return (
         <>
@@ -1126,4 +1131,28 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     );
 };
 
-export default ChatMessage;
+export default React.memo(ChatMessage, (prev, next) => {
+    return areRenderRelevantMessagesEqual(
+        { info: prev.message.info, parts: prev.message.parts },
+        { info: next.message.info, parts: next.message.parts }
+    )
+        && areOptionalRenderRelevantMessagesEqual(
+            prev.previousMessage ? { info: prev.previousMessage.info, parts: prev.previousMessage.parts } : undefined,
+            next.previousMessage ? { info: next.previousMessage.info, parts: next.previousMessage.parts } : undefined
+        )
+        && areOptionalRenderRelevantMessagesEqual(
+            prev.nextMessage ? { info: prev.nextMessage.info, parts: prev.nextMessage.parts } : undefined,
+            next.nextMessage ? { info: next.nextMessage.info, parts: next.nextMessage.parts } : undefined
+        )
+        && prev.isInActiveTurn === next.isInActiveTurn
+        && prev.activeStreamingPhase === next.activeStreamingPhase
+        && prev.assistantHeaderMessageId === next.assistantHeaderMessageId
+        && prev.animateUserOnMount === next.animateUserOnMount
+        && prev.onUserAnimationConsumed === next.onUserAnimationConsumed
+        && areRelevantTurnGroupingContextsEqual(
+            prev.turnGroupingContext,
+            next.turnGroupingContext,
+            prev.message.info.id,
+            deriveMessageRole(prev.message.info).isUser
+        );
+});

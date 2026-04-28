@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { mergePathValues } from './path-utils.js';
 
 export const createOpenCodeEnvRuntime = (deps) => {
   const {
@@ -51,12 +52,33 @@ export const createOpenCodeEnvRuntime = (deps) => {
   };
 
   const searchPathFor = (binaryName) => {
+    const trimmed = typeof binaryName === 'string' ? binaryName.trim() : '';
+    if (!trimmed) {
+      return null;
+    }
+
     const current = process.env.PATH || '';
     const parts = current.split(path.delimiter).filter(Boolean);
+    const candidateNames = [trimmed];
+
+    if (process.platform === 'win32' && !path.extname(trimmed)) {
+      const pathExt = process.env.PATHEXT || process.env.PathExt || '.COM;.EXE;.BAT;.CMD';
+      for (const ext of pathExt.split(';')) {
+        const normalizedExt = ext.trim();
+        if (!normalizedExt) continue;
+        const candidateName = `${trimmed}${normalizedExt.startsWith('.') ? normalizedExt : `.${normalizedExt}`}`;
+        if (!candidateNames.some((existing) => existing.toLowerCase() === candidateName.toLowerCase())) {
+          candidateNames.push(candidateName);
+        }
+      }
+    }
+
     for (const dir of parts) {
-      const candidate = path.join(dir, binaryName);
-      if (isExecutable(candidate)) {
-        return candidate;
+      for (const candidateName of candidateNames) {
+        const candidate = path.join(dir, candidateName);
+        if (isExecutable(candidate)) {
+          return candidate;
+        }
       }
     }
     return null;
@@ -162,26 +184,6 @@ export const createOpenCodeEnvRuntime = (deps) => {
     return null;
   };
 
-  const mergePathValues = (preferred, fallback) => {
-    const merged = new Set();
-
-    const addSegments = (value) => {
-      if (typeof value !== 'string' || !value) {
-        return;
-      }
-      for (const segment of value.split(path.delimiter)) {
-        if (segment) {
-          merged.add(segment);
-        }
-      }
-    };
-
-    addSegments(preferred);
-    addSegments(fallback);
-
-    return Array.from(merged).join(path.delimiter);
-  };
-
   const applyLoginShellEnvSnapshot = () => {
     const snapshot = getLoginShellEnvSnapshot();
     if (!snapshot) {
@@ -200,7 +202,13 @@ export const createOpenCodeEnvRuntime = (deps) => {
       process.env[key] = value;
     }
 
-    process.env.PATH = mergePathValues(snapshot.PATH || '', process.env.PATH || '');
+    const currentPath = process.env.PATH || '';
+    const shellPath = snapshot.PATH || '';
+    if (!shellPath) {
+      return;
+    }
+
+    process.env.PATH = mergePathValues(shellPath, currentPath, path.delimiter);
   };
 
   const isWslExecutableValue = (value) => {

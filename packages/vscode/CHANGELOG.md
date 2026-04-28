@@ -1,3 +1,41 @@
+## [1.9.9] - 2026-04-26
+
+- UI/Localization: added translated interface strings for Spanish, Brazilian Portuguese, Ukrainian, and Simplified Chinese, with language selection available in extension settings.
+- Settings/Appearance: added selectable interface and code fonts with 10 choices each, and reorganized appearance sections for faster personalization.
+- Chat/Header: restored context usage in the chat header, kept it tooltip-only, and kept rate-limit usage available in expanded layouts.
+- Chat/Workflow: added keyboard turn navigation, widened chat content, and introduced a local workspace review slash command for faster review handoff.
+- Chat/Context: autocomplete and mention results are now easier to scan, with fuller results and clearer active-tab behavior while drafting.
+- Chat/Tasks: todo list progress now updates live as task status changes, and task/model status hints are steadier during active runs (thanks to @Yabuku-xD).
+- Chat/Performance: improved cold start and streaming smoothness with lazy-loaded heavy components, chunk-load recovery, and lower re-render churn in long sessions (thanks to @Yabuku-xD).
+- Reliability/Sync: improved reconnect recovery so active sessions resync more reliably after transient stream interruptions, with safer local-stream buffering (thanks to @jwcrystal, @vhqtvn).
+- Reliability/Startup: improved managed runtime startup by preserving user PATH and skipping stale session directories, reducing startup edge-case failures.
+
+## [1.9.8] - 2026-04-22
+
+- Sessions/Reliability: fixed parent-child session sync during reconnects and navigation, so status and progress stay aligned in nested session trees (thanks to @jwcrystal).
+- Settings/Sync: settings changes now sync more reliably with other clients, and sidebar session pagination is steadier in larger workspaces.
+- Sessions/Folders: folder updates now persist through server-backed APIs, improving consistency across different machine path setups.
+- UI: refined chat chrome with a cleaner bottom scroll fade and hidden idle tasks row.
+- Chat/Commands: added `/summary` slash command for a non-destructive session summary - optional topic hint after the command focuses the output, and the prompt is customizable under Settings: Magic Prompts.
+
+## [1.9.7] - 2026-04-22
+
+- Sessions/UI: added bulk selection in the sessions sidebar and fixed pinned sessions so they stay pinned after reloads (thanks to @yart).
+- Chat/Files: you can now drag files and folders from the file tree into chat, with improved `@folder` autocomplete when building prompt context (thanks to @youfch).
+- Files: open editors now refresh file content after external changes, reducing stale-file surprises while coding (thanks to @jwcrystal).
+- Settings/MCP: improved MCP auth flow with remote config support and clearer diagnostics for faster setup and troubleshooting (thanks to @daveotero).
+- Chat/Questions: single-choice questions now use radio selection, making guided responses clearer and faster.
+- Reliability: config resolution now matches OpenCode behavior more closely, reducing extension/runtime mismatches during startup and settings reads (thanks to @cyan).
+- Reliability/Streaming: strengthened bootstrap and connection recovery paths, improving first-load consistency and reducing stuck/empty session states during reconnects.
+
+## [1.9.6] - 2026-04-17
+
+- Reliability: improved startup shell detection to avoid false OpenCode discovery on POSIX login shells, reducing stuck startup edge cases in new workspaces (thanks to @geekifan).
+- Reliability/Streaming: moved to a WebSocket-first message stream with SSE fallback and added safer compression handling, improving stability on slower or proxied connections (thanks to @geekifan, @jwcrystal).
+- Sessions/Worktrees: enforced worktree isolation for session and Git flows, reducing cross-project context bleed when switching chats or branches (thanks to @jwcrystal).
+- Chat/Export: added export session as Markdown and improved empty-state/export behavior, making conversation handoff and notes easier (thanks to @coldbrow).
+- Chat/Markdown: added LaTeX rendering support for clearer math and technical notation in rendered messages (thanks to @ricautomation).
+
 ## [1.9.5] - 2026-04-14
 
 - Chat/Tool Output: added an interactive tree viewer for structured outputs and fixed JSON quote rendering, making large payloads easier to inspect accurately (thanks to @yaozhenghangma).

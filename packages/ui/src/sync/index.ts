@@ -70,8 +70,10 @@ export {
   useSyncDirectory,
   useChildStoreManager,
   useSessionMessageRecords,
+  useEnsureSessionMessages,
   useSessionTextMessages,
   useUserMessageHistory,
+  buildSessionMessageRecordsSnapshot,
 } from "./sync-context"
 
 // Sync operations

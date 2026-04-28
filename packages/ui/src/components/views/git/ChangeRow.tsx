@@ -1,13 +1,13 @@
 import React, { useCallback, useMemo } from 'react';
 import {
-  RiCheckboxLine,
-  RiCheckboxBlankLine,
   RiArrowGoBackLine,
   RiLoader4Line,
 } from '@remixicon/react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Checkbox } from '@/components/ui/checkbox';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import type { GitStatus } from '@/lib/api/types';
+import { useI18n } from '@/lib/i18n';
 
 type ChangeDescriptor = {
   code: string;
@@ -65,6 +65,7 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
   indentPx = 0,
 }) {
   const descriptor = useMemo(() => describeChange(file), [file]);
+  const { t } = useI18n();
   const indicatorLabel = descriptor.description;
   const insertions = stats?.insertions ?? 0;
   const deletions = stats?.deletions ?? 0;
@@ -80,15 +81,6 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
       }
     },
     [onToggle, onViewDiff]
-  );
-
-  const handleToggleClick = useCallback(
-    (event: React.MouseEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      onToggle();
-    },
-    [onToggle]
   );
 
   const handleRevertClick = useCallback(
@@ -109,19 +101,14 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
       onKeyDown={handleKeyDown}
       style={indentPx > 0 ? { paddingLeft: `${indentPx}px` } : undefined}
     >
-        <button
-          type="button"
-          onClick={handleToggleClick}
-          aria-pressed={checked}
-          aria-label={`Select ${file.path}`}
-          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        >
-          {checked ? (
-            <RiCheckboxLine className="size-4 text-primary" />
-          ) : (
-            <RiCheckboxBlankLine className="size-4" />
-          )}
-        </button>
+        <div className="flex size-5 shrink-0 items-center justify-center" onClick={(e) => { e.stopPropagation(); }}>
+          <Checkbox
+            size="sm"
+            checked={checked}
+            onChange={() => onToggle()}
+            ariaLabel={t('gitView.changes.selectFileAria', { path: file.path })}
+          />
+        </div>
         <span
           className="typography-micro font-semibold w-4 text-center uppercase"
           style={{ color: descriptor.color }}
@@ -137,7 +124,7 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
             return (
               <span
                 className="flex-1 min-w-0 truncate typography-ui-label text-foreground"
-                style={{ direction: 'rtl', textAlign: 'left' }}
+                style={{ direction: 'rtl', textAlign: 'left', unicodeBidi: 'plaintext' }}
                 title={file.path}
               >
                 {file.path}
@@ -150,7 +137,7 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
             <span className="flex-1 min-w-0 flex items-baseline overflow-hidden" title={file.path}>
               <span
                 className="min-w-0 truncate typography-ui-label text-muted-foreground"
-                style={{ direction: 'rtl', textAlign: 'left' }}
+                  style={{ direction: 'rtl', textAlign: 'left', unicodeBidi: 'plaintext' }}
               >
                 {dir}
               </span>
@@ -170,7 +157,7 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
               onClick={handleRevertClick}
               disabled={isReverting}
               className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
-              aria-label={`Revert changes for ${file.path}`}
+              aria-label={t('gitView.changes.revertFileAria', { path: file.path })}
             >
               {isReverting ? (
                 <RiLoader4Line className="size-3.5 animate-spin" />
@@ -179,7 +166,7 @@ export const ChangeRow = React.memo<ChangeRowProps>(function ChangeRow({
               )}
             </button>
           </TooltipTrigger>
-          <TooltipContent sideOffset={8}>Revert changes</TooltipContent>
+          <TooltipContent sideOffset={8}>{t('gitView.changes.revertFileTooltip')}</TooltipContent>
         </Tooltip>
     </div>
   );

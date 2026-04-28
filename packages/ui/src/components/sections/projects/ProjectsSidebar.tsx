@@ -7,50 +7,24 @@ import { SettingsSidebarItem } from '@/components/sections/shared/SettingsSideba
 import { PROJECT_COLOR_MAP, PROJECT_ICON_MAP, getProjectIconImageUrl } from '@/lib/projectMeta';
 import { cn } from '@/lib/utils';
 import { RiAddLine, RiFolderLine } from '@remixicon/react';
-import { isDesktopLocalOriginActive, isTauriShell, isVSCodeRuntime, requestDirectoryAccess } from '@/lib/desktop';
+import { isVSCodeRuntime } from '@/lib/desktop';
 import { sessionEvents } from '@/lib/sessionEvents';
-import { toast } from '@/components/ui';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
+import { useI18n } from '@/lib/i18n';
 
 export const ProjectsSidebar: React.FC<{ onItemSelect?: () => void }> = ({ onItemSelect }) => {
+  const { t } = useI18n();
   const projects = useProjectsStore((state) => state.projects);
-  const addProject = useProjectsStore((state) => state.addProject);
   const selectedId = useUIStore((state) => state.settingsProjectsSelectedId);
   const setSelectedId = useUIStore((state) => state.setSettingsProjectsSelectedId);
   const { currentTheme } = useThemeSystem();
   const [brokenIconIds, setBrokenIconIds] = React.useState<Set<string>>(new Set());
 
   const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
-  const tauriIpcAvailable = React.useMemo(() => isTauriShell(), []);
 
   const handleAddProject = React.useCallback(() => {
-    if (!tauriIpcAvailable || !isDesktopLocalOriginActive()) {
-      sessionEvents.requestDirectoryDialog();
-      return;
-    }
-
-    requestDirectoryAccess('')
-      .then((result) => {
-        if (result.success && result.path) {
-          const added = addProject(result.path, { id: result.projectId });
-          if (!added) {
-            toast.error('Failed to add project', {
-              description: 'Please select a valid directory.',
-            });
-            return;
-          }
-          setSelectedId(added.id);
-        } else if (result.error && result.error !== 'Directory selection cancelled') {
-          toast.error('Failed to select directory', {
-            description: result.error,
-          });
-        }
-      })
-      .catch((error) => {
-        console.error('Failed to select directory:', error);
-        toast.error('Failed to select directory');
-      });
-  }, [addProject, setSelectedId, tauriIpcAvailable]);
+    sessionEvents.requestDirectoryDialog();
+  }, []);
 
   React.useEffect(() => {
     if (projects.length === 0) {
@@ -70,9 +44,9 @@ export const ProjectsSidebar: React.FC<{ onItemSelect?: () => void }> = ({ onIte
       variant="background"
       header={
         <div className={cn('border-b px-3', 'pt-4 pb-3')}>
-          <h2 className="text-base font-semibold text-foreground mb-3">Projects</h2>
+          <h2 className="text-base font-semibold text-foreground mb-3">{t('settings.page.projects.title')}</h2>
           <div className="flex items-center justify-between gap-2">
-            <span className="typography-meta text-muted-foreground">Total {projects.length}</span>
+            <span className="typography-meta text-muted-foreground">{t('settings.projects.sidebar.total', { count: projects.length })}</span>
             {!isVSCode && (
               <Button
                 type="button"
@@ -80,7 +54,7 @@ export const ProjectsSidebar: React.FC<{ onItemSelect?: () => void }> = ({ onIte
                 size="icon"
                 className="h-7 w-7 -my-1 text-muted-foreground"
                 onClick={handleAddProject}
-                aria-label="Add project"
+                aria-label={t('settings.projects.sidebar.actions.addProject')}
               >
                 <RiAddLine className="size-4" />
               </Button>

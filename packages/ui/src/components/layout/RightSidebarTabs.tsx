@@ -1,15 +1,20 @@
 import React from 'react';
-import { RiFolder3Line, RiGitBranchLine } from '@remixicon/react';
+import { RiBookletLine, RiFolder3Line, RiGitBranchLine } from '@remixicon/react';
 
 import { SortableTabsStrip } from '@/components/ui/sortable-tabs-strip';
+import { ProjectNotesTodoPanel } from '@/components/session/ProjectNotesTodoPanel';
 import { GitView } from '@/components/views';
-import { useUIStore } from '@/stores/useUIStore';
 import { useGitStore } from '@/stores/useGitStore';
+import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { formatDirectoryName } from '@/lib/utils';
+import { useI18n } from '@/lib/i18n';
 import { SidebarFilesTree } from './SidebarFilesTree';
 
-type RightTab = 'git' | 'files';
+type RightTab = 'git' | 'files' | 'context';
 
 /**
  * Keeps git status fresh while the right sidebar is open.
@@ -35,7 +40,58 @@ function useRightSidebarGitSync(directory: string | undefined, isSidebarOpen: bo
   }, [directory, git, isSidebarOpen, ensureStatus]);
 }
 
+const ContextSidebarPanel: React.FC = () => {
+  const activeProjectId = useProjectsStore((state) => state.activeProjectId);
+  const projects = useProjectsStore((state) => state.projects);
+  const homeDirectory = useDirectoryStore((state) => state.homeDirectory);
+  const gitDirectories = useGitStore((state) => state.directories);
+
+  const activeProject = React.useMemo(() => {
+    if (activeProjectId) {
+      return projects.find((project) => project.id === activeProjectId) ?? projects[0] ?? null;
+    }
+    return projects[0] ?? null;
+  }, [activeProjectId, projects]);
+
+  const projectRef = React.useMemo(() => {
+    if (!activeProject) {
+      return null;
+    }
+    return {
+      id: activeProject.id,
+      path: activeProject.path,
+    };
+  }, [activeProject]);
+
+  const projectLabel = React.useMemo(() => {
+    if (!activeProject) {
+      return null;
+    }
+    return activeProject.label?.trim()
+      || formatDirectoryName(activeProject.path, homeDirectory)
+      || activeProject.path;
+  }, [activeProject, homeDirectory]);
+
+  const canCreateWorktree = React.useMemo(() => {
+    if (!activeProject) {
+      return false;
+    }
+    return gitDirectories.get(activeProject.path)?.isGitRepo === true;
+  }, [activeProject, gitDirectories]);
+
+  return (
+    <div className="h-full min-h-0 overflow-auto bg-sidebar">
+      <ProjectNotesTodoPanel
+        projectRef={projectRef}
+        projectLabel={projectLabel}
+        canCreateWorktree={canCreateWorktree}
+      />
+    </div>
+  );
+};
+
 export const RightSidebarTabs: React.FC = () => {
+  const { t } = useI18n();
   const rightSidebarTab = useUIStore((state) => state.rightSidebarTab);
   const setRightSidebarTab = useUIStore((state) => state.setRightSidebarTab);
   const isRightSidebarOpen = useUIStore((state) => state.isRightSidebarOpen);
@@ -46,15 +102,20 @@ export const RightSidebarTabs: React.FC = () => {
   const tabItems = React.useMemo(() => [
     {
       id: 'git',
-      label: 'Git',
+      label: t('layout.rightSidebar.git'),
       icon: <RiGitBranchLine className="h-3.5 w-3.5" />,
     },
     {
       id: 'files',
-      label: 'Files',
+      label: t('layout.rightSidebar.files'),
       icon: <RiFolder3Line className="h-3.5 w-3.5" />,
     },
-  ], []);
+    {
+      id: 'context',
+      label: t('layout.rightSidebar.context'),
+      icon: <RiBookletLine className="h-3.5 w-3.5" />,
+    },
+  ], [t]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-sidebar">
@@ -72,6 +133,7 @@ export const RightSidebarTabs: React.FC = () => {
       <div className="min-h-0 flex-1 overflow-hidden">
         {rightSidebarTab === 'git' && <GitView />}
         {rightSidebarTab === 'files' && <SidebarFilesTree />}
+        {rightSidebarTab === 'context' && <ContextSidebarPanel />}
       </div>
     </div>
   );

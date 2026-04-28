@@ -117,8 +117,11 @@ async function checkForUpdatesFromApi(currentVersion, options = {}) {
     const data = await response.json();
     if (typeof data?.latestVersion !== 'string') return null;
 
+    const versionComparison = compareVersions(data.latestVersion, currentVersion);
+    if (versionComparison < 0) return null;
+
     return {
-      available: Boolean(data.updateAvailable),
+      available: Boolean(data.updateAvailable) && versionComparison > 0,
       version: data.latestVersion,
       currentVersion,
       body: typeof data.releaseNotes === 'string' ? data.releaseNotes : undefined,
@@ -327,6 +330,22 @@ function packageManagerOwnsCurrentInstall(pm) {
 }
 
 export function detectPackageManagerDetails() {
+  // In desktop (Electron) runtime, package-manager detection is worthless —
+  // the app ships as a .app bundle, not installed via npm/pnpm/yarn/bun, and
+  // updates are handled by electron-updater. The detection path does up to a
+  // dozen spawnSync(pm, ['bin', '-g']) calls with 10s timeouts each; under
+  // the in-process server every one blocks the Electron main event loop and
+  // manifests as a multi-second UI freeze. Short-circuit here.
+  if (process.env.OPENCHAMBER_RUNTIME === 'desktop') {
+    return {
+      packageManager: 'electron',
+      reason: 'desktop-runtime',
+      packagePath: null,
+      packageManagerCommand: null,
+      globalNodeModulesRoot: null,
+    };
+  }
+
   if (cachedDetectedPm) {
       return {
         packageManager: cachedDetectedPm,
@@ -634,11 +653,19 @@ export async function getLatestVersion() {
 }
 
 /**
- * Parse semver version to numeric for comparison
+ * Compare semver-like version strings.
  */
-function parseVersion(version) {
-  const parts = version.replace(/^v/, '').split('.').map(Number);
-  return (parts[0] || 0) * 10000 + (parts[1] || 0) * 100 + (parts[2] || 0);
+function compareVersions(left, right) {
+  const a = String(left || '').replace(/^v/, '').split('.').map((part) => Number.parseInt(part || '0', 10));
+  const b = String(right || '').replace(/^v/, '').split('.').map((part) => Number.parseInt(part || '0', 10));
+  const length = Math.max(a.length, b.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a[index] || 0) - (b[index] || 0);
+    if (diff !== 0) return diff;
+  }
+
+  return 0;
 }
 
 /**
@@ -655,14 +682,10 @@ export async function fetchChangelogNotes(fromVersion, toVersion) {
     const changelog = await response.text();
     const sections = changelog.split(/^## /m).slice(1);
 
-    const fromNum = parseVersion(fromVersion);
-    const toNum = parseVersion(toVersion);
-
     const relevantSections = sections.filter((section) => {
       const match = section.match(/^\[(\d+\.\d+\.\d+)\]/);
       if (!match) return false;
-      const ver = parseVersion(match[1]);
-      return ver > fromNum && ver <= toNum;
+      return compareVersions(match[1], fromVersion) > 0 && compareVersions(match[1], toVersion) <= 0;
     });
 
     if (relevantSections.length === 0) return undefined;
@@ -700,9 +723,7 @@ export async function checkForUpdates(options = {}) {
     };
   }
 
-  const currentNum = parseVersion(currentVersion);
-  const latestNum = parseVersion(latestVersion);
-  const available = latestNum > currentNum;
+  const available = compareVersions(latestVersion, currentVersion) > 0;
   let changelog;
   if (available) {
     changelog = await fetchChangelogNotes(currentVersion, latestVersion);

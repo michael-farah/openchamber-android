@@ -1,4 +1,5 @@
 import { registerOpenCodeProxy } from './proxy.js';
+import { pathLooksUserConfigured, mergePathValues } from './path-utils.js';
 
 export const createServerUtilsRuntime = (dependencies) => {
   const {
@@ -62,23 +63,21 @@ export const createServerUtilsRuntime = (dependencies) => {
   };
 
   const buildAugmentedPath = () => {
-    const augmented = new Set();
-
+    const currentPath = process.env.PATH || '';
     const loginShellPath = getLoginShellPath();
-    if (loginShellPath) {
-      for (const segment of loginShellPath.split(path.delimiter)) {
-        if (segment) {
-          augmented.add(segment);
-        }
-      }
-    }
+    const home = os.homedir();
+    const currentPathLooksUserConfigured = pathLooksUserConfigured(currentPath, home, path.delimiter);
+    const primaryPath = currentPathLooksUserConfigured ? currentPath : loginShellPath;
+    const fallbackPath = currentPathLooksUserConfigured ? loginShellPath : currentPath;
 
-    const current = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
-    for (const segment of current) {
-      augmented.add(segment);
-    }
+    return mergePathValues(primaryPath, fallbackPath, path.delimiter);
+  };
 
-    return Array.from(augmented).join(path.delimiter);
+  const buildManagedOpenCodePath = () => {
+    const currentPath = process.env.PATH || '';
+    const loginShellPath = getLoginShellPath();
+
+    return mergePathValues(loginShellPath || '', currentPath, path.delimiter);
   };
 
   const parseSseDataPayload = (block) => {
@@ -159,6 +158,7 @@ export const createServerUtilsRuntime = (dependencies) => {
     setOpenCodePort,
     waitForOpenCodePort,
     buildAugmentedPath,
+    buildManagedOpenCodePath,
     parseSseDataPayload,
     fetchAgentsSnapshot,
     fetchProvidersSnapshot,

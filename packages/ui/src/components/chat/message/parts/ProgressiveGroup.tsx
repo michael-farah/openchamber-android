@@ -37,6 +37,7 @@ interface ProgressiveGroupProps {
     showHeader: boolean;
     animateRows?: boolean;
     animatedToolIds?: Set<string>;
+    renderJustificationActions?: (activity: TurnActivityPart) => React.ReactNode;
 }
 
 const isActivityRunning = (activity: TurnActivityPart): boolean => {
@@ -270,6 +271,7 @@ const renderReadFilePath = (displayPath: string) => {
                     color: 'var(--tools-description)',
                     direction: 'rtl',
                     textAlign: 'left',
+                    unicodeBidi: 'plaintext',
                 }}
             >
                 {displayDir}
@@ -738,10 +740,10 @@ export const StaticToolRow = React.memo(StaticToolRowInner, (prev, next) => {
 /**
  * Inline reasoning text block — rendered as dimmed italic markdown.
  */
-const InlineReasoningBlock: React.FC<{
+const InlineReasoningBlock = React.memo(({ activity, onContentChange }: {
     activity: TurnActivityPart;
     onContentChange?: (reason?: ContentChangeReason) => void;
-}> = ({ activity, onContentChange }) => {
+}) => {
     return (
         <ReasoningPart
             part={activity.part}
@@ -749,23 +751,25 @@ const InlineReasoningBlock: React.FC<{
             onContentChange={onContentChange}
         />
     );
-};
+});
 
 /**
  * Inline justification text block — rendered as normal assistant text between tools.
  */
-const InlineJustificationBlock: React.FC<{
+const InlineJustificationBlock = React.memo(({ activity, onContentChange, actions }: {
     activity: TurnActivityPart;
     onContentChange?: (reason?: ContentChangeReason) => void;
-}> = ({ activity, onContentChange }) => {
+    actions?: React.ReactNode;
+}) => {
     return (
         <JustificationBlock
             part={activity.part}
             messageId={activity.messageId}
             onContentChange={onContentChange}
+            actions={actions}
         />
     );
-};
+});
 
 const ProgressiveGroup: React.FC<ProgressiveGroupProps> = ({
     parts,
@@ -782,6 +786,7 @@ const ProgressiveGroup: React.FC<ProgressiveGroupProps> = ({
     showHeader,
     animateRows = true,
     animatedToolIds,
+    renderJustificationActions,
 }) => {
     void _streamPhase;
     const previewCount = showHeader && !isExpanded
@@ -849,6 +854,7 @@ const ProgressiveGroup: React.FC<ProgressiveGroupProps> = ({
                         <InlineJustificationBlock
                             activity={row.activity}
                             onContentChange={onContentChange}
+                            actions={renderJustificationActions?.(row.activity)}
                         />
                     </>
                 );

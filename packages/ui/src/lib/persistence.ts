@@ -1,5 +1,7 @@
 import type { DesktopSettings } from '@/lib/desktop';
+import { createProjectIdFromPath } from '@/lib/projectId';
 import { useUIStore } from '@/stores/useUIStore';
+import { isMonoFontOption, isUiFontOption } from '@/lib/fontOptions';
 import { useMessageQueueStore } from '@/stores/messageQueueStore';
 import { setDirectoryShowHidden } from '@/lib/directoryShowHidden';
 import { setFilesViewShowGitignored } from '@/lib/filesViewShowGitignored';
@@ -31,7 +33,15 @@ const persistToLocalStorage = (settings: DesktopSettings) => {
   }
   if (settings.homeDirectory) {
     localStorage.setItem('homeDirectory', settings.homeDirectory);
-    window.__OPENCHAMBER_HOME__ = settings.homeDirectory;
+    // Electron's preload exposes __OPENCHAMBER_HOME__ as a read-only
+    // contextBridge property; assignment throws TypeError there. In VSCode
+    // webview and plain web runtime the property is writable. Swallow the
+    // error in Electron — preload already seeded the value correctly.
+    try {
+      window.__OPENCHAMBER_HOME__ = settings.homeDirectory;
+    } catch {
+      /* read-only contextBridge property — leave preload-seeded value */
+    }
   }
   if (Array.isArray(settings.projects) && settings.projects.length > 0) {
     localStorage.setItem('projects', JSON.stringify(settings.projects));
@@ -149,12 +159,14 @@ const sanitizeProjects = (value: unknown): DesktopSettings['projects'] | undefin
     if (!entry || typeof entry !== 'object') continue;
     const candidate = entry as Record<string, unknown>;
 
-    const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
     const rawPath = typeof candidate.path === 'string' ? candidate.path.trim() : '';
-    if (!id || !rawPath) continue;
+    if (!rawPath) continue;
 
     const normalizedPath = rawPath === '/' ? rawPath : rawPath.replace(/\\/g, '/').replace(/\/+$/, '');
     if (!normalizedPath) continue;
+
+    const id = createProjectIdFromPath(normalizedPath);
+    if (!id) continue;
 
     if (seenIds.has(id) || seenPaths.has(normalizedPath)) continue;
     seenIds.add(id);
@@ -297,6 +309,9 @@ const getRuntimeSettingsAPI = () => getRegisteredRuntimeAPIs()?.settings ?? null
 
 const applyDesktopUiPreferences = (settings: DesktopSettings) => {
   const store = useUIStore.getState();
+  const configStore = typeof window !== 'undefined'
+    ? window.__zustand_config_store__?.getState?.() ?? null
+    : null;
   const queueStore = useMessageQueueStore.getState();
 
   if (typeof settings.showReasoningTraces === 'boolean' && settings.showReasoningTraces !== store.showReasoningTraces) {
@@ -371,6 +386,18 @@ const applyDesktopUiPreferences = (settings: DesktopSettings) => {
   if (typeof settings.showExpandedEditTools === 'boolean' && settings.showExpandedEditTools !== store.showExpandedEditTools) {
     store.setShowExpandedEditTools(settings.showExpandedEditTools);
   }
+  if (typeof settings.timeFormatPreference === 'string'
+    && (settings.timeFormatPreference === 'auto' || settings.timeFormatPreference === '12h' || settings.timeFormatPreference === '24h')) {
+    if (settings.timeFormatPreference !== store.timeFormatPreference) {
+      store.setTimeFormatPreference(settings.timeFormatPreference);
+    }
+  }
+  if (typeof settings.weekStartPreference === 'string'
+    && (settings.weekStartPreference === 'auto' || settings.weekStartPreference === 'sunday' || settings.weekStartPreference === 'monday')) {
+    if (settings.weekStartPreference !== store.weekStartPreference) {
+      store.setWeekStartPreference(settings.weekStartPreference);
+    }
+  }
   if (typeof settings.chatRenderMode === 'string'
     && (settings.chatRenderMode === 'sorted' || settings.chatRenderMode === 'live')) {
     if (settings.chatRenderMode !== store.chatRenderMode) {
@@ -395,8 +422,20 @@ const applyDesktopUiPreferences = (settings: DesktopSettings) => {
       store.setUserMessageRenderingMode(settings.userMessageRenderingMode);
     }
   }
+  if (typeof settings.messageStreamTransport === 'string'
+    && (settings.messageStreamTransport === 'auto' || settings.messageStreamTransport === 'ws' || settings.messageStreamTransport === 'sse')) {
+    if (configStore && settings.messageStreamTransport !== configStore.settingsMessageStreamTransport) {
+      configStore.setSettingsMessageStreamTransport(settings.messageStreamTransport);
+    }
+  }
   if (typeof settings.stickyUserHeader === 'boolean' && settings.stickyUserHeader !== store.stickyUserHeader) {
     store.setStickyUserHeader(settings.stickyUserHeader);
+  }
+  if (
+    typeof settings.showSplitAssistantMessageActions === 'boolean'
+    && settings.showSplitAssistantMessageActions !== store.showSplitAssistantMessageActions
+  ) {
+    store.setShowSplitAssistantMessageActions(settings.showSplitAssistantMessageActions);
   }
   if (typeof settings.reportUsage === 'boolean' && settings.reportUsage !== store.reportUsage) {
     store.setReportUsage(settings.reportUsage);
@@ -406,6 +445,12 @@ const applyDesktopUiPreferences = (settings: DesktopSettings) => {
   }
   if (typeof settings.terminalFontSize === 'number' && Number.isFinite(settings.terminalFontSize) && settings.terminalFontSize !== store.terminalFontSize) {
     store.setTerminalFontSize(settings.terminalFontSize);
+  }
+  if (isUiFontOption(settings.uiFont) && settings.uiFont !== store.uiFont) {
+    store.setUiFont(settings.uiFont);
+  }
+  if (isMonoFontOption(settings.monoFont) && settings.monoFont !== store.monoFont) {
+    store.setMonoFont(settings.monoFont);
   }
   if (typeof settings.padding === 'number' && Number.isFinite(settings.padding) && settings.padding !== store.padding) {
     store.setPadding(settings.padding);
@@ -497,6 +542,9 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   if (typeof candidate.opencodeBinary === 'string') {
     const trimmed = candidate.opencodeBinary.trim();
     result.opencodeBinary = trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof candidate.desktopLanAccessEnabled === 'boolean') {
+    result.desktopLanAccessEnabled = candidate.desktopLanAccessEnabled;
   }
 
   const projects = sanitizeProjects(candidate.projects);
@@ -780,9 +828,21 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   if (typeof candidate.showExpandedEditTools === 'boolean') {
     result.showExpandedEditTools = candidate.showExpandedEditTools;
   }
+  if (typeof candidate.timeFormatPreference === 'string'
+    && (candidate.timeFormatPreference === 'auto' || candidate.timeFormatPreference === '12h' || candidate.timeFormatPreference === '24h')) {
+    result.timeFormatPreference = candidate.timeFormatPreference;
+  }
+  if (typeof candidate.weekStartPreference === 'string'
+    && (candidate.weekStartPreference === 'auto' || candidate.weekStartPreference === 'sunday' || candidate.weekStartPreference === 'monday')) {
+    result.weekStartPreference = candidate.weekStartPreference;
+  }
   if (typeof candidate.chatRenderMode === 'string'
     && (candidate.chatRenderMode === 'sorted' || candidate.chatRenderMode === 'live')) {
     result.chatRenderMode = candidate.chatRenderMode;
+  }
+  if (typeof candidate.messageStreamTransport === 'string'
+    && (candidate.messageStreamTransport === 'auto' || candidate.messageStreamTransport === 'ws' || candidate.messageStreamTransport === 'sse')) {
+    result.messageStreamTransport = candidate.messageStreamTransport;
   }
   if (typeof candidate.activityRenderMode === 'string'
     && (candidate.activityRenderMode === 'collapsed' || candidate.activityRenderMode === 'summary')) {
@@ -799,11 +859,20 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   if (typeof candidate.stickyUserHeader === 'boolean') {
     result.stickyUserHeader = candidate.stickyUserHeader;
   }
+  if (typeof candidate.showSplitAssistantMessageActions === 'boolean') {
+    result.showSplitAssistantMessageActions = candidate.showSplitAssistantMessageActions;
+  }
   if (typeof candidate.fontSize === 'number' && Number.isFinite(candidate.fontSize)) {
     result.fontSize = candidate.fontSize;
   }
   if (typeof candidate.terminalFontSize === 'number' && Number.isFinite(candidate.terminalFontSize)) {
     result.terminalFontSize = candidate.terminalFontSize;
+  }
+  if (isUiFontOption(candidate.uiFont)) {
+    result.uiFont = candidate.uiFont;
+  }
+  if (isMonoFontOption(candidate.monoFont)) {
+    result.monoFont = candidate.monoFont;
   }
   if (typeof candidate.padding === 'number' && Number.isFinite(candidate.padding)) {
     result.padding = candidate.padding;
@@ -930,20 +999,47 @@ export const syncDesktopSettings = async (): Promise<void> => {
 
   const persistApi = getPersistApi();
 
-  const applySettings = (settings: DesktopSettings) => {
-    persistToLocalStorage(settings);
-    const apply = () => applyDesktopUiPreferences(settings);
+  // Wait for Zustand persist hydration before applying server settings.
+  // Otherwise `set()`-calls race with hydration: we set X, then hydration
+  // reads localStorage and overwrites back to the persisted value.
+  const waitForHydration = (): Promise<void> => {
+    if (!persistApi?.hasHydrated || persistApi.hasHydrated()) {
+      return Promise.resolve();
+    }
+    if (!persistApi.onFinishHydration) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      const unsubscribe = persistApi.onFinishHydration!(() => {
+        unsubscribe?.();
+        finish();
+      });
+      // Guard: hydration may have flipped to true between the hasHydrated
+      // check and the onFinishHydration subscription — resolve immediately.
+      if (persistApi.hasHydrated?.()) finish();
+    });
+  };
 
-    if (persistApi?.hasHydrated?.()) {
-      apply();
-    } else {
-      apply();
-      if (persistApi?.onFinishHydration) {
-        const unsubscribe = persistApi.onFinishHydration(() => {
-          unsubscribe?.();
-          apply();
-        });
-      }
+  // Each step is wrapped in try/catch so a failure in one side-effect (e.g.
+  // a TypeError from writing to a contextBridge-protected global) doesn't
+  // prevent server settings from reaching the Zustand store.
+  const applySettings = async (settings: DesktopSettings) => {
+    try {
+      persistToLocalStorage(settings);
+    } catch (error) {
+      console.warn('persistToLocalStorage failed:', error);
+    }
+    await waitForHydration();
+    try {
+      applyDesktopUiPreferences(settings);
+    } catch (error) {
+      console.warn('applyDesktopUiPreferences failed:', error);
     }
 
     if (typeof window !== 'undefined') {
@@ -954,7 +1050,7 @@ export const syncDesktopSettings = async (): Promise<void> => {
   try {
     const webSettings = await fetchWebSettings();
     if (webSettings) {
-      applySettings(webSettings);
+      await applySettings(webSettings);
     }
   } catch (error) {
     console.warn('Failed to synchronise settings:', error);

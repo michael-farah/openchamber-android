@@ -8,9 +8,10 @@
     --oc-safe-area-left: 0px;
     --oc-header-height: 56px;
     --oc-visual-viewport-offset-top: 0px;
-    --oc-keyboard-inset: 0px;
-    --oc-keyboard-avoid-offset: 0px;
-    --oc-keyboard-home-indicator: 0px;
+    --oc-visual-viewport-height: 100dvh;
+    --oc-wco-left-inset: 0px;
+    --oc-wco-right-inset: 0px;
+    --oc-wco-titlebar-height: 0px;
     --ui-regular-font-weight: 400;
     --oc-scrollbar-thumb: oklch(0.32 0.03 50 / 0.4);
     --oc-scrollbar-thumb-hover: oklch(0.32 0.03 50 / 0.6);
@@ -124,11 +125,11 @@
     font-weight: var(--ui-regular-font-weight, 400);
   }
 
-  /* Desktop shell: prevent rubber-band scrolling of the page itself.
+  /* Prevent rubber-band scrolling of the page itself.
      App scroll should live inside dedicated scroll containers. */
-  :root.desktop-runtime,
-  :root.desktop-runtime body,
-  :root.desktop-runtime #root {
+  :root,
+  :root body,
+  :root #root {
     height: 100%;
     overflow: hidden;
     overscroll-behavior: none;
@@ -194,10 +195,12 @@
 }
 
 @theme inline {
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-none: 0;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.75rem;
+  --radius-full: 9999px;
 
   /* Override Tailwind spacing scale with custom properties that respect --padding-scale */
   --spacing-0: 0;

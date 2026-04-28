@@ -95,6 +95,27 @@ const resolveWorkspacePathFromContext = async ({ req, targetPath, resolveProject
   });
 };
 
+const resolveReadPathFromContext = async ({ req, targetPath, resolveProjectDirectory, path, os, normalizeDirectoryPath, openchamberUserConfigRoot }) => {
+  if (req.query?.allowOutsideWorkspace === 'true') {
+    const normalized = normalizeDirectoryPath(targetPath);
+    if (!normalized || typeof normalized !== 'string') {
+      return { ok: false, error: 'Path is required' };
+    }
+    const resolved = path.resolve(normalized);
+    return { ok: true, base: path.dirname(resolved), resolved };
+  }
+
+  return resolveWorkspacePathFromContext({
+    req,
+    targetPath,
+    resolveProjectDirectory,
+    path,
+    os,
+    normalizeDirectoryPath,
+    openchamberUserConfigRoot,
+  });
+};
+
 const runCommandInDirectory = ({ shell, shellFlag, command, resolvedCwd, spawn, buildAugmentedPath, commandTimeoutMs }) => {
   return new Promise((resolve) => {
     let stdout = '';
@@ -290,7 +311,7 @@ export const registerFsRoutes = (app, dependencies) => {
     }
 
     try {
-      const resolved = await resolveWorkspacePathFromContext({
+      const resolved = await resolveReadPathFromContext({
         req,
         targetPath: filePath,
         resolveProjectDirectory,
@@ -317,7 +338,7 @@ export const registerFsRoutes = (app, dependencies) => {
         return res.status(400).json({ error: 'Specified path is not a file' });
       }
 
-      return res.json({ path: canonicalPath, isFile: true, size: stats.size });
+      return res.json({ path: canonicalPath, isFile: true, size: stats.size, mtimeMs: stats.mtimeMs });
     } catch (error) {
       const err = error;
       if (err && typeof err === 'object' && err.code === 'ENOENT') {
@@ -338,7 +359,7 @@ export const registerFsRoutes = (app, dependencies) => {
     }
 
     try {
-      const resolved = await resolveWorkspacePathFromContext({
+      const resolved = await resolveReadPathFromContext({
         req,
         targetPath: filePath,
         resolveProjectDirectory,
@@ -387,7 +408,7 @@ export const registerFsRoutes = (app, dependencies) => {
     }
 
     try {
-      const resolved = await resolveWorkspacePathFromContext({
+      const resolved = await resolveReadPathFromContext({
         req,
         targetPath: filePath,
         resolveProjectDirectory,
@@ -427,6 +448,12 @@ export const registerFsRoutes = (app, dependencies) => {
         '.avif': 'image/avif',
       };
       const mimeType = mimeMap[ext] || 'application/octet-stream';
+
+      const download = req.query.download === 'true';
+      if (download) {
+        const fileName = path.basename(canonicalPath);
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      }
 
       const content = await fsPromises.readFile(canonicalPath);
       res.setHeader('Cache-Control', 'no-store');
@@ -589,7 +616,24 @@ export const registerFsRoutes = (app, dependencies) => {
           spawn('open', ['-R', resolved], { windowsHide: true, stdio: 'ignore', detached: true }).unref();
         }
       } else if (platform === 'win32') {
-        spawn('explorer', ['/select,', resolved], { windowsHide: true, stdio: 'ignore', detached: true }).unref();
+        const stat = await fsPromises.stat(resolved);
+        const escapedPath = resolved.replace(/'/g, "''");
+        const explorerArg = stat.isDirectory() ? escapedPath : `/select,${escapedPath}`;
+        const command = `Start-Process -FilePath explorer.exe -ArgumentList '${explorerArg}'`;
+        await new Promise((resolve, reject) => {
+          const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+            windowsHide: true,
+            stdio: 'ignore',
+          });
+          child.once('error', reject);
+          child.once('exit', (code) => {
+            if (code === 0) {
+              resolve();
+              return;
+            }
+            reject(new Error(`Explorer launch failed with code ${code ?? 'unknown'}`));
+          });
+        });
       } else {
         const stat = await fsPromises.stat(resolved);
         const dir = stat.isDirectory() ? resolved : path.dirname(resolved);

@@ -2,6 +2,7 @@ import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { isTauriShell } from "@/lib/desktop";
 import { matchesFuzzyQuery } from "@/lib/search/fuzzySearch";
+import type { I18nKey } from "@/lib/i18n";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -14,6 +15,17 @@ export function cn(...inputs: ClassValue[]) {
 export const isMacOS = (): boolean => {
   if (typeof navigator === 'undefined') return false;
   return /Macintosh|Mac OS X/.test(navigator.userAgent || '');
+};
+
+export const isWindows = (): boolean => {
+  if (typeof navigator === 'undefined') return false;
+  return /Windows/.test(navigator.userAgent || '');
+};
+
+export const getRevealLabelKey = (): I18nKey => {
+  if (isMacOS()) return 'common.revealPath.finder';
+  if (isWindows()) return 'common.revealPath.fileExplorer';
+  return 'common.revealPath.fileManager';
 };
 
 /**

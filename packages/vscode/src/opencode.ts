@@ -7,6 +7,7 @@ import { execSync } from 'child_process';
 import { spawnSync } from 'child_process';
 import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
+import { normalizeWindowsDriveLetter } from './pathUtils';
 
 const READY_CHECK_TIMEOUT_MS = 30000;
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -127,6 +128,34 @@ function appendToPath(dir: string) {
   process.env.PATH = [trimmed, ...parts].join(path.delimiter);
 }
 
+function findExecutableInPath(binaryName: string): string | null {
+  const trimmed = (binaryName || '').trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const current = process.env.PATH || '';
+  if (!current) {
+    return null;
+  }
+
+  for (const segment of current.split(path.delimiter)) {
+    const dir = segment.trim();
+    if (!dir) {
+      continue;
+    }
+
+    const candidate = path.join(dir, trimmed);
+    if (isExecutable(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+let cachedDetectedOpencodeCliPath: string | undefined;
+
 function resolveOpencodeCliPath(): string | null {
   const configured = (() => {
     try {
@@ -185,11 +214,20 @@ function resolveOpencodeCliPath(): string | null {
     }
   }
 
+  if (cachedDetectedOpencodeCliPath) {
+    if (isExecutable(cachedDetectedOpencodeCliPath)) {
+      return cachedDetectedOpencodeCliPath;
+    }
+    cachedDetectedOpencodeCliPath = undefined;
+  }
+
   const home = os.homedir();
   const unixFallbacks = [
     path.join(home, '.opencode', 'bin', 'opencode'),
     path.join(home, '.bun', 'bin', 'opencode'),
     path.join(home, '.local', 'bin', 'opencode'),
+    '/usr/local/bin/opencode',
+    '/opt/homebrew/bin/opencode',
     path.join(home, 'bin', 'opencode'),
   ];
 
@@ -214,9 +252,18 @@ function resolveOpencodeCliPath(): string | null {
     ].filter(Boolean);
   })();
 
+  if (process.platform !== 'win32') {
+    const fromPath = findExecutableInPath('opencode');
+    if (fromPath) {
+      cachedDetectedOpencodeCliPath = fromPath;
+      return fromPath;
+    }
+  }
+
   const fallbacks = process.platform === 'win32' ? winFallbacks : unixFallbacks;
   for (const candidate of fallbacks) {
     if (isExecutable(candidate)) {
+      cachedDetectedOpencodeCliPath = candidate;
       return candidate;
     }
   }
@@ -233,26 +280,8 @@ function resolveOpencodeCliPath(): string | null {
           .map((line) => line.trim())
           .filter(Boolean);
         const found = lines.find((line) => isExecutable(line));
-        if (found) return found;
-      }
-    } catch {
-      // ignore
-    }
-    return null;
-  }
-
-  // Non-Windows: try a login shell PATH lookup.
-  const shells = [process.env.SHELL, '/bin/zsh', '/bin/bash', '/bin/sh'].filter(Boolean) as string[];
-  for (const shell of shells) {
-    if (!isExecutable(shell)) continue;
-    try {
-      const result = spawnSync(shell, ['-lic', 'command -v opencode'], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      if (result.status === 0) {
-        const found = (result.stdout || '').trim().split(/\s+/).pop() || '';
-        if (found && isExecutable(found)) {
+        if (found) {
+          cachedDetectedOpencodeCliPath = found;
           return found;
         }
       }
@@ -377,40 +406,15 @@ function getLoginShellEnvSnapshot(): Record<string, string> | null {
     return cachedLoginShellEnvSnapshot;
   }
 
-  if (process.platform === 'win32') {
-    const windowsSnapshot = getWindowsShellEnvSnapshot();
-    cachedLoginShellEnvSnapshot = windowsSnapshot;
-    return windowsSnapshot;
+  // Avoid interactive POSIX login shells in the extension host.
+  if (process.platform !== 'win32') {
+    cachedLoginShellEnvSnapshot = null;
+    return null;
   }
 
-  const shellCandidates = [process.env.SHELL, '/bin/zsh', '/bin/bash', '/bin/sh'].filter(Boolean) as string[];
-  for (const shellPath of shellCandidates) {
-    if (!isExecutable(shellPath)) {
-      continue;
-    }
-
-    try {
-      const result = spawnSync(shellPath, ['-lic', 'env -0'], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        maxBuffer: 10 * 1024 * 1024,
-        windowsHide: true,
-      });
-      if (result.status !== 0) {
-        continue;
-      }
-      const parsed = parseNullSeparatedEnvSnapshot(result.stdout || '');
-      if (parsed) {
-        cachedLoginShellEnvSnapshot = parsed;
-        return parsed;
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  cachedLoginShellEnvSnapshot = null;
-  return null;
+  const windowsSnapshot = getWindowsShellEnvSnapshot();
+  cachedLoginShellEnvSnapshot = windowsSnapshot;
+  return windowsSnapshot;
 }
 
 function mergePathValues(preferred: string, fallback: string): string {
@@ -623,11 +627,6 @@ export function createOpenCodeManager(_context: vscode.ExtensionContext): OpenCo
   let status: ConnectionStatus = 'disconnected';
   let lastError: string | undefined;
   const listeners = new Set<(status: ConnectionStatus, error?: string) => void>();
-  /** On Windows, VS Code's uri.fsPath returns a lowercase drive letter (e.g. d:\...)
-   *  while process.cwd() (used by OpenCode server) returns uppercase (D:\...).
-   *  Normalize to uppercase so session directory queries match. */
-  const normalizeWindowsDriveLetter = (p: string): string =>
-    p.replace(/^([a-z]):/, (_, letter: string) => letter.toUpperCase() + ':');
   const workspaceDirectory = (): string =>
     normalizeWindowsDriveLetter(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || os.homedir());
   let workingDirectory: string = workspaceDirectory();

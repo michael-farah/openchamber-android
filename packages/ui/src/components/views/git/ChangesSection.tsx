@@ -1,6 +1,7 @@
 import React from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { RiArrowDownSLine, RiArrowRightSLine, RiCheckboxBlankLine, RiCheckboxLine, RiSubtractLine } from '@remixicon/react';
+import { RiFolder3Fill, RiFolderOpenFill } from '@remixicon/react';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -16,6 +17,7 @@ import { ChangeRow } from './ChangeRow';
 import type { GitStatus } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/useUIStore';
+import { useI18n } from '@/lib/i18n';
 
 interface ChangesSectionProps {
   changeEntries: GitStatus['files'];
@@ -182,6 +184,7 @@ export const ChangesSection: React.FC<ChangesSectionProps> = ({
   maxListHeightClassName,
   onVisiblePathsChange,
 }) => {
+  const { t } = useI18n();
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const gitChangesViewMode = useUIStore((state) => state.gitChangesViewMode);
   const isTreeView = gitChangesViewMode === 'tree';
@@ -381,36 +384,34 @@ export const ChangesSection: React.FC<ChangesSectionProps> = ({
         className={cn('group flex items-center gap-2 py-1.5 hover:bg-sidebar/40', rowPaddingClassName)}
         style={{ paddingLeft: `${row.depth * TREE_INDENT_PX}px` }}
       >
+        <div className="flex size-5 shrink-0 items-center justify-center">
+          <Checkbox
+            size="sm"
+            checked={selectionState === 'all'}
+            indeterminate={selectionState === 'partial'}
+            onChange={() => toggleDirectorySelection(directory)}
+            ariaLabel={t('gitView.changes.toggleDirectorySelectionAria', { path: directory.path })}
+          />
+        </div>
+
         <button
           type="button"
           onClick={() => toggleDirectoryExpanded(directory.path)}
-          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          aria-label={isExpanded ? `Collapse ${directory.path}` : `Expand ${directory.path}`}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          aria-label={isExpanded
+            ? t('gitView.changes.collapseDirectoryAria', { path: directory.path })
+            : t('gitView.changes.expandDirectoryAria', { path: directory.path })}
         >
-          {isExpanded ? <RiArrowDownSLine className="size-4" /> : <RiArrowRightSLine className="size-4" />}
-        </button>
-
-        <button
-          type="button"
-          role="checkbox"
-          aria-checked={selectionState === 'partial' ? 'mixed' : selectionState === 'all'}
-          aria-label={`Toggle selection for directory ${directory.path}`}
-          onClick={() => toggleDirectorySelection(directory)}
-          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        >
-          {selectionState === 'all' ? (
-            <RiCheckboxLine className="size-4 text-primary" />
-          ) : selectionState === 'partial' ? (
-            <RiSubtractLine className="size-4 text-primary" />
+          {isExpanded ? (
+            <RiFolderOpenFill className="h-4 w-4 flex-shrink-0 text-primary/60" />
           ) : (
-            <RiCheckboxBlankLine className="size-4" />
+            <RiFolder3Fill className="h-4 w-4 flex-shrink-0 text-primary/60" />
           )}
+          <span className="min-w-0 flex-1 truncate typography-ui-label text-foreground" title={directory.path}>
+            {directory.name}
+          </span>
+          <span className="ml-auto shrink-0 typography-micro text-muted-foreground">{directory.files.length}</span>
         </button>
-
-        <span className="min-w-0 truncate typography-ui-label text-foreground" title={directory.path}>
-          {directory.name}
-        </span>
-        <span className="ml-auto shrink-0 typography-micro text-muted-foreground">{directory.files.length}</span>
       </div>
     );
   }, [
@@ -424,6 +425,7 @@ export const ChangesSection: React.FC<ChangesSectionProps> = ({
     revertingPaths,
     rowPaddingClassName,
     selectedPaths,
+    t,
     toggleDirectoryExpanded,
     toggleDirectorySelection,
   ]);
@@ -442,28 +444,24 @@ export const ChangesSection: React.FC<ChangesSectionProps> = ({
       <section className={containerClassName}>
         <header className={headerClassName}>
           <div className="flex min-w-0 items-center gap-2">
-            <h3 className="typography-ui-header font-semibold text-foreground">Changes</h3>
+            <h3 className="typography-ui-header font-semibold text-foreground">{t('gitView.changes.title')}</h3>
             {totalCount > 0 ? (
-              <button
-                type="button"
-                onClick={areAllSelected ? onClearSelection : onSelectAll}
-                disabled={isRevertingAll}
-                aria-checked={isPartiallySelected ? 'mixed' : hasAnySelected}
-                aria-label={areAllSelected ? 'Clear file selection' : 'Select all files'}
+              <div
                 className={cn(
-                  'inline-flex h-6 items-center gap-1 rounded px-1.5 text-muted-foreground',
-                  'hover:bg-interactive-hover/55 hover:text-foreground',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+                  'inline-flex h-6 items-center gap-1 rounded px-1.5',
                   isRevertingAll && 'cursor-not-allowed opacity-50'
                 )}
               >
-                {hasAnySelected ? (
-                  <RiCheckboxLine className={cn('size-4', isPartiallySelected ? 'text-primary/50' : 'text-primary')} />
-                ) : (
-                  <RiCheckboxBlankLine className="size-4" />
-                )}
+                <Checkbox
+                  size="sm"
+                  checked={hasAnySelected}
+                  indeterminate={isPartiallySelected}
+                  disabled={isRevertingAll}
+                  onChange={() => (areAllSelected ? onClearSelection() : onSelectAll())}
+                  ariaLabel={areAllSelected ? t('gitView.changes.clearSelectionAria') : t('gitView.changes.selectAllAria')}
+                />
                 <span className="typography-meta text-muted-foreground">{selectedCount}/{totalCount}</span>
-              </button>
+              </div>
             ) : null}
           </div>
           <div className="flex items-center gap-2 pr-1">
@@ -474,7 +472,7 @@ export const ChangesSection: React.FC<ChangesSectionProps> = ({
                 onClick={() => setConfirmRevertAllOpen(true)}
                 disabled={isRevertingAll}
               >
-                Revert all
+                {t('gitView.changes.revertAll')}
               </Button>
             ) : null}
           </div>
@@ -516,7 +514,7 @@ export const ChangesSection: React.FC<ChangesSectionProps> = ({
                 })}
               </div>
             ) : (
-              <div role="list" aria-label="Changed files">
+              <div role="list" aria-label={t('gitView.changes.changedFilesAria')}>
                 {rowItems.map((item, index) => (
                   <div
                     key={isTreeView ? (item as FlattenedTreeRow).key : `file:${(item as GitStatus['files'][number]).path}`}
@@ -538,17 +536,19 @@ export const ChangesSection: React.FC<ChangesSectionProps> = ({
       <Dialog open={confirmRevertAllOpen} onOpenChange={(open) => { if (!isRevertingAll) setConfirmRevertAllOpen(open); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Revert all changes?</DialogTitle>
+            <DialogTitle>{t('gitView.changes.revertAllDialogTitle')}</DialogTitle>
             <DialogDescription>
-              This will discard local changes for {totalCount} file{totalCount === 1 ? '' : 's'} in the list.
+              {totalCount === 1
+                ? t('gitView.changes.revertAllDescriptionSingle', { count: totalCount })
+                : t('gitView.changes.revertAllDescriptionPlural', { count: totalCount })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setConfirmRevertAllOpen(false)} disabled={isRevertingAll}>
-              Cancel
+              {t('gitView.common.cancel')}
             </Button>
             <Button variant="destructive" size="sm" onClick={() => void handleConfirmRevertAll()} disabled={isRevertingAll}>
-              {isRevertingAll ? 'Reverting...' : 'Revert all'}
+              {isRevertingAll ? t('gitView.changes.reverting') : t('gitView.changes.revertAll')}
             </Button>
           </DialogFooter>
         </DialogContent>

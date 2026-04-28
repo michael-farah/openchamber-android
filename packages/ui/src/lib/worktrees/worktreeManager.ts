@@ -13,6 +13,36 @@ import type {
   CreateGitWorktreePayload,
   GitWorktreeValidationResult,
 } from '@/lib/api/types';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+
+type WorktreeListEntry = {
+  path?: string;
+  branch?: string;
+  head?: string;
+  name?: string;
+};
+
+const deriveHeadStateFromWorktreeEntry = (entry: WorktreeListEntry): 'branch' | 'detached' | 'unborn' => {
+  const branch = (entry.branch || '').trim();
+  const head = (entry.head || '').trim();
+  if (!branch) {
+    if (!head) return 'unborn';
+    return 'detached';
+  }
+  return 'branch';
+};
+
+const deriveCanonicalWorktreeFields = (
+  entry: WorktreeListEntry,
+  worktreePath: string,
+): Pick<WorktreeMetadata, 'worktreeRoot' | 'worktreeStatus' | 'headState' | 'worktreeSource'> => {
+  return {
+    worktreeRoot: worktreePath,
+    worktreeStatus: 'ready',
+    headState: deriveHeadStateFromWorktreeEntry(entry),
+    worktreeSource: 'existing',
+  };
+};
 
 export type ProjectRef = { id: string; path: string };
 
@@ -206,13 +236,21 @@ export async function listProjectWorktrees(project: ProjectRef): Promise<Worktre
         const worktreePath = normalizePath(entry.path);
         const branch = (entry.branch || '').replace(/^refs\/heads\//, '').trim();
         const name = (entry.name || '').trim();
+
+        // Derive canonical worktree metadata from worktree list entry
+        const canonical = deriveCanonicalWorktreeFields(entry, worktreePath);
+
         return {
           source: 'sdk' as const,
           name: name || deriveSdkWorktreeNameFromDirectory(worktreePath),
           path: worktreePath,
           projectDirectory: metadataProjectDirectory,
-          branch,
+          branch: branch,
           label: branch || name || deriveSdkWorktreeNameFromDirectory(worktreePath),
+          worktreeRoot: canonical.worktreeRoot,
+          worktreeStatus: canonical.worktreeStatus,
+          headState: canonical.headState,
+          worktreeSource: canonical.worktreeSource,
         };
       })
       .filter((entry) => normalizePath(entry.path) !== normalizedProjectDirectory);
@@ -269,9 +307,26 @@ export async function createWorktree(project: ProjectRef, args: CreateWorktreeAr
     projectDirectory: metadataProjectDirectory,
     branch: returnedBranch,
     label: returnedBranch || returnedName,
+    worktreeRoot: normalizePath(returnedPath),
+    worktreeStatus: 'ready',
+    headState: returnedBranch ? 'branch' : 'unborn',
+    worktreeSource: 'created-for-session',
   };
 
   markWorktreeBootstrapPending(metadata.path);
+
+  _worktreeListCache.delete(projectDirectory);
+
+  // Update sidebar store so new worktree appears immediately
+  const sidebarProjectKey = projectDirectory;
+  const currentByProject = useSessionUIStore.getState().availableWorktreesByProject;
+  const updatedByProject = new Map(currentByProject);
+  const existing = updatedByProject.get(sidebarProjectKey) ?? [];
+  updatedByProject.set(sidebarProjectKey, [...existing, metadata]);
+  useSessionUIStore.setState({
+    availableWorktreesByProject: updatedByProject,
+    availableWorktrees: [...useSessionUIStore.getState().availableWorktrees, metadata],
+  });
 
   return metadata;
 }
@@ -287,7 +342,7 @@ export async function removeProjectWorktree(project: ProjectRef, worktree: Workt
   deleteLocalBranch?: boolean;
   remoteName?: string;
 }): Promise<void> {
-  const projectDirectory = project.path;
+  const projectDirectory = normalizePath(project.path);
 
   const deleteRemote = Boolean(options?.deleteRemoteBranch);
   const deleteLocalBranch = options?.deleteLocalBranch === true;
@@ -301,6 +356,36 @@ export async function removeProjectWorktree(project: ProjectRef, worktree: Workt
   }
 
   clearWorktreeBootstrapState(worktree.path);
+
+  _worktreeListCache.delete(normalizePath(project.path));
+
+  // Update sidebar store so removed worktree disappears immediately
+  const normalizedWorktreePath = normalizePath(worktree.path);
+  const sidebarProjectKey = projectDirectory;
+  const currentByProject = useSessionUIStore.getState().availableWorktreesByProject;
+  const updatedByProject = new Map(currentByProject);
+  const projectWorktrees = updatedByProject.get(sidebarProjectKey) ?? [];
+  updatedByProject.set(
+    sidebarProjectKey,
+    projectWorktrees.filter((w) => normalizePath(w.path) !== normalizedWorktreePath),
+  );
+
+  // Clean up worktreeMetadata for sessions in the removed worktree
+  const currentMetadata = useSessionUIStore.getState().worktreeMetadata;
+  const updatedMetadata = new Map(currentMetadata);
+  for (const [sid, meta] of currentMetadata.entries()) {
+    if (meta && normalizePath(meta.path) === normalizedWorktreePath) {
+      updatedMetadata.delete(sid);
+    }
+  }
+
+  useSessionUIStore.setState({
+    availableWorktreesByProject: updatedByProject,
+    availableWorktrees: useSessionUIStore.getState().availableWorktrees.filter(
+      (w) => normalizePath(w.path) !== normalizedWorktreePath,
+    ),
+    worktreeMetadata: updatedMetadata,
+  });
 
   const branchName = (worktree.branch || '').replace(/^refs\/heads\//, '').trim();
   if (deleteRemote && branchName) {

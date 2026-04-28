@@ -7,22 +7,23 @@ import type { OpencodeClient, Session, Message, Part } from "@opencode-ai/sdk/v2
 import { Binary } from "./binary"
 import { useSessionUIStore } from "./session-ui-store"
 import { useInputStore } from "./input-store"
-import type { DirectoryStore } from "./child-store"
-import type { StoreApi } from "zustand"
+import type { ChildStoreManager } from "./child-store"
 import { opencodeClient } from "@/lib/opencode/client"
 import { useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
+import { useConfigStore } from "@/stores/useConfigStore"
 import { registerSessionDirectory } from "./sync-refs"
+import { isSyntheticPart } from "@/lib/messages/synthetic"
 
 // Reference set by SyncProvider — allows actions to access SDK and stores
 let _sdk: OpencodeClient | null = null
-let _childStores: { ensureChild: (dir: string) => StoreApi<DirectoryStore> } | null = null
+let _childStores: ChildStoreManager | null = null
 let _getDirectory: () => string = () => ""
 let _optimisticAdd: ((input: { sessionID: string; message: Message; parts: Part[] }) => void) | null = null
 let _optimisticRemove: ((input: { sessionID: string; messageID: string }) => void) | null = null
 
 export function setActionRefs(
   sdk: OpencodeClient,
-  childStores: { ensureChild: (dir: string) => StoreApi<DirectoryStore> },
+  childStores: ChildStoreManager,
   getDirectory: () => string,
 ) {
   _sdk = sdk
@@ -54,6 +55,37 @@ function dir() {
   return _getDirectory() || undefined
 }
 
+function connectionLostError(): Error {
+  const { hasEverConnected, lastDisconnectReason } = useConfigStore.getState()
+  const suffix = lastDisconnectReason
+    ? ` (${lastDisconnectReason})`
+    : hasEverConnected
+      ? ""
+      : " (never connected)"
+  return new Error(`Connection lost${suffix}. Please wait for reconnection.`)
+}
+
+// Wait briefly for the pipeline to re-establish connection before failing a
+// send. Transient reconnects (heartbeat race, WS→SSE fallback, brief network
+// blip) otherwise surface as a hard "Connection lost" toast even though the
+// pipeline recovers within a second. While waiting, run bounded health probes
+// inside the same grace window so stale disconnected state can recover quickly.
+const CONNECTION_GRACE_MS = 2000
+export async function waitForConnectionOrThrow(): Promise<void> {
+  const deadline = Date.now() + CONNECTION_GRACE_MS
+  while (Date.now() < deadline) {
+    if (useConfigStore.getState().isConnected) return
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) break
+    if (await useConfigStore.getState().probeConnection({ timeoutMs: Math.min(500, remainingMs) })) return
+    const sleepMs = Math.min(100, deadline - Date.now())
+    if (sleepMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, sleepMs))
+    }
+  }
+  throw connectionLostError()
+}
+
 function getSessionDirectory(sessionId: string): string | undefined {
   return useSessionUIStore.getState().getDirectoryForSession(sessionId) || dir()
 }
@@ -73,6 +105,59 @@ function getSessionReplyClient(sessionId?: string): OpencodeClient {
     return opencodeClient.getScopedSdkClient(directory)
   }
   return sdk()
+}
+
+function resolveDirectoryForBlockingRequest(
+  type: "permission" | "question",
+  sessionId: string,
+  requestId: string,
+): string | null {
+  const stores = _childStores
+  if (!stores || !requestId) {
+    return null
+  }
+
+  for (const [directory, store] of stores.children) {
+    const state = store.getState()
+    const requestMap = type === "permission" ? state.permission : state.question
+    for (const requests of Object.values(requestMap) as Array<Array<{ id: string }> | undefined>) {
+      if (requests?.some((request) => request.id === requestId)) {
+        return directory
+      }
+    }
+  }
+
+  const sessionDirectory = useSessionUIStore.getState().getDirectoryForSession(sessionId)
+  if (sessionDirectory) {
+    return sessionDirectory
+  }
+
+  for (const [directory, store] of stores.children) {
+    const state = store.getState()
+    if (
+      state.session.some((session) => session.id === sessionId)
+      || Object.prototype.hasOwnProperty.call(state.message, sessionId)
+      || Object.prototype.hasOwnProperty.call(state.session_status ?? {}, sessionId)
+      || Object.prototype.hasOwnProperty.call(state.permission ?? {}, sessionId)
+      || Object.prototype.hasOwnProperty.call(state.question ?? {}, sessionId)
+    ) {
+      return directory
+    }
+  }
+
+  return null
+}
+
+function getRequestReplyClient(
+  type: "permission" | "question",
+  sessionId: string,
+  requestId: string,
+): OpencodeClient {
+  const requestDirectory = resolveDirectoryForBlockingRequest(type, sessionId, requestId)
+  if (requestDirectory) {
+    return opencodeClient.getScopedSdkClient(requestDirectory)
+  }
+  return getSessionReplyClient(sessionId)
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +213,26 @@ function optimisticRemoveSession(sessionId: string, directory?: string): Session
 export async function deleteSession(sessionId: string, _options?: Record<string, unknown>): Promise<boolean> {
   const sessionDirectory = getSessionDirectory(sessionId)
   // Remove from UI immediately, rollback on error
-  const snapshot = optimisticRemoveSession(sessionId, sessionDirectory)
+  let snapshot = optimisticRemoveSession(sessionId, sessionDirectory)
+  let removedFromDir: string | null = snapshot ? (sessionDirectory ?? null) : null
+
+  // If the session wasn't in the resolved directory (e.g. archived session
+  // whose original child store was disposed), search all child stores.
+  if (!snapshot && _childStores) {
+    for (const [dir, store] of _childStores.children.entries()) {
+      const current = store.getState()
+      const sessions = [...current.session]
+      const result = Binary.search(sessions, sessionId, (s) => s.id)
+      if (result.found) {
+        snapshot = current.session
+        sessions.splice(result.index, 1)
+        store.setState({ session: sessions })
+        removedFromDir = dir
+        break
+      }
+    }
+  }
+
   const ui = useSessionUIStore.getState()
   if (ui.currentSessionId === sessionId) {
     ui.setCurrentSession(null)
@@ -139,7 +243,13 @@ export async function deleteSession(sessionId: string, _options?: Record<string,
     return true
   } catch (error) {
     console.error("[session-actions] deleteSession failed", error)
-    if (snapshot) getDirectoryStore(sessionDirectory).setState({ session: snapshot })
+    if (snapshot && removedFromDir) {
+      try {
+        getDirectoryStore(removedFromDir).setState({ session: snapshot })
+      } catch {
+        // child store may have been disposed since — ignore rollback
+      }
+    }
     return false
   }
 }
@@ -273,6 +383,8 @@ export async function optimisticSend(input: {
     throw new Error("Optimistic refs not set — is useSync() mounted?")
   }
 
+  await waitForConnectionOrThrow()
+
   const store = dirStore()
   const messageID = ascendingId("msg")
   const textPartId = ascendingId("prt")
@@ -356,9 +468,14 @@ export async function respondToPermission(
   requestId: string,
   response: "once" | "always" | "reject",
 ): Promise<void> {
-  const result = await getSessionReplyClient(sessionId).permission.reply({
+  await waitForConnectionOrThrow()
+  const directory = resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
+    || getSessionDirectory(sessionId)
+    || dir()
+  const result = await getRequestReplyClient("permission", sessionId, requestId).permission.reply({
     requestID: requestId,
     reply: response,
+    ...(directory ? { directory } : {}),
   })
   if (!result.data) {
     throw new Error("Permission reply failed")
@@ -369,9 +486,14 @@ export async function dismissPermission(
   sessionId: string,
   requestId: string,
 ): Promise<void> {
-  const result = await getSessionReplyClient(sessionId).permission.reply({
+  await waitForConnectionOrThrow()
+  const directory = resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
+    || getSessionDirectory(sessionId)
+    || dir()
+  const result = await getRequestReplyClient("permission", sessionId, requestId).permission.reply({
     requestID: requestId,
     reply: "reject",
+    ...(directory ? { directory } : {}),
   })
   if (!result.data) {
     throw new Error("Permission dismissal failed")
@@ -387,9 +509,14 @@ export async function respondToQuestion(
   requestId: string,
   answers: string[] | string[][],
 ): Promise<void> {
-  const result = await getSessionReplyClient(sessionId).question.reply({
+  await waitForConnectionOrThrow()
+  const directory = resolveDirectoryForBlockingRequest("question", sessionId, requestId)
+    || getSessionDirectory(sessionId)
+    || dir()
+  const result = await getRequestReplyClient("question", sessionId, requestId).question.reply({
     requestID: requestId,
     answers: answers as Array<Array<string>>,
+    ...(directory ? { directory } : {}),
   })
   if (!result.data) {
     throw new Error("Question reply failed")
@@ -400,8 +527,13 @@ export async function rejectQuestion(
   sessionId: string,
   requestId: string,
 ): Promise<void> {
-  const result = await getSessionReplyClient(sessionId).question.reject({
+  await waitForConnectionOrThrow()
+  const directory = resolveDirectoryForBlockingRequest("question", sessionId, requestId)
+    || getSessionDirectory(sessionId)
+    || dir()
+  const result = await getRequestReplyClient("question", sessionId, requestId).question.reject({
     requestID: requestId,
+    ...(directory ? { directory } : {}),
   })
   if (!result.data) {
     throw new Error("Question rejection failed")
@@ -435,13 +567,14 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
     }
   }
 
-  // Extract message text for prompt restoration
+  // Extract message text for prompt restoration (only non-synthetic text parts —
+  // the server adds file content as synthetic text parts that should not be restored)
   const messages = state.message[sessionId] ?? []
   const targetMsg = messages.find((m) => m.id === messageId)
   let messageText = ""
   if (targetMsg && targetMsg.role === "user") {
     const parts = state.part[messageId] ?? []
-    const textParts = parts.filter((p) => p.type === "text")
+    const textParts = parts.filter((p) => p.type === "text" && !isSyntheticPart(p))
     messageText = textParts
       .map((p: Record<string, unknown>) => (p as { text?: string }).text || (p as { content?: string }).content || "")
       .join("\n")
@@ -556,10 +689,11 @@ export async function forkFromMessage(sessionId: string, messageId: string): Pro
   const store = dirStore()
   const state = store.getState()
 
-  // Extract message text for input restoration
+  // Extract message text for input restoration (only non-synthetic text parts —
+  // the server adds file content as synthetic text parts that should not be restored)
   const parts = state.part[messageId] ?? []
   let messageText = ""
-  const textParts = parts.filter((p) => p.type === "text")
+  const textParts = parts.filter((p) => p.type === "text" && !isSyntheticPart(p))
   messageText = textParts
     .map((p: Part) => ((p as Record<string, unknown>).text as string) || ((p as Record<string, unknown>).content as string) || "")
     .join("\n")

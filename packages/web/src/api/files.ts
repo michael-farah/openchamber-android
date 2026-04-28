@@ -110,9 +110,13 @@ export const createWebFilesAPI = (): FilesAPI => ({
     };
   },
 
-  async statFile(path: string): Promise<{ path: string; isFile: boolean; size: number }> {
+  async statFile(path: string, options): Promise<{ path: string; isFile: boolean; size: number; mtimeMs?: number }> {
     const target = normalizePath(path);
-    const response = await fetch(`/api/fs/stat?path=${encodeURIComponent(target)}`);
+    const params = new URLSearchParams({ path: target });
+    if (options?.allowOutsideWorkspace) {
+      params.set('allowOutsideWorkspace', 'true');
+    }
+    const response = await fetch(`/api/fs/stat?${params.toString()}`);
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: response.statusText }));
@@ -124,12 +128,17 @@ export const createWebFilesAPI = (): FilesAPI => ({
       path: typeof (result as { path?: string }).path === 'string' ? normalizePath((result as { path: string }).path) : target,
       isFile: Boolean((result as { isFile?: boolean }).isFile),
       size: typeof (result as { size?: number }).size === 'number' ? (result as { size: number }).size : 0,
+      mtimeMs: typeof (result as { mtimeMs?: number }).mtimeMs === 'number' ? (result as { mtimeMs: number }).mtimeMs : undefined,
     };
   },
 
-  async readFile(path: string): Promise<{ content: string; path: string }> {
+  async readFile(path: string, options): Promise<{ content: string; path: string }> {
     const target = normalizePath(path);
-    const response = await fetch(`/api/fs/read?path=${encodeURIComponent(target)}`);
+    const params = new URLSearchParams({ path: target });
+    if (options?.allowOutsideWorkspace) {
+      params.set('allowOutsideWorkspace', 'true');
+    }
+    const response = await fetch(`/api/fs/read?${params.toString()}`);
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: response.statusText }));
@@ -210,5 +219,16 @@ export const createWebFilesAPI = (): FilesAPI => ({
 
     const result = await response.json().catch(() => ({}));
     return { success: Boolean((result as { success?: boolean }).success) };
+  },
+
+  async downloadFile(path: string): Promise<void> {
+    const target = normalizePath(path);
+    const url = `/api/fs/raw?path=${encodeURIComponent(target)}&download=true`;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = target.split('/').pop() || 'file';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   },
 });

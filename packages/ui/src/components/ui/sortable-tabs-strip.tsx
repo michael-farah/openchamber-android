@@ -17,6 +17,7 @@ import {
 import { CSS as DndCSS } from '@dnd-kit/utilities';
 import { RiCloseLine } from '@remixicon/react';
 
+import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/useUIStore';
 
@@ -96,16 +97,20 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
   activePillLowercase = true,
   className,
 }) => {
+  const { t } = useI18n();
   const isMobile = useUIStore((state) => state.isMobile);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const [overflow, setOverflow] = React.useState<{ left: boolean; right: boolean }>({ left: false, right: false });
   const itemIDs = React.useMemo(() => items.map((item) => item.id), [items]);
   const isScrollable = layoutMode === 'scrollable';
+  const isDefaultVariant = variant === 'default';
   const isActivePillVariant = variant === 'active-pill';
   const isAnimatedVariant = variant === 'animated';
   const usesActivePillIndicator = isActivePillVariant || isAnimatedVariant;
+  const useUnderlineIndicator = isDefaultVariant;
+  const usesIndicator = usesActivePillIndicator || useUnderlineIndicator;
   const useIntrinsicPillSizing = isActivePillVariant && isScrollable;
-  const showPillTrackBackground = isAnimatedVariant;
+  const showPillTrackBackground = usesActivePillIndicator;
   const shouldAnimateActivePill = animateActivePill ?? isAnimatedVariant;
   const reorderEnabled = typeof onReorder === 'function';
   const Wrapper = reorderEnabled ? SortableTabWrapper : StaticTabWrapper;
@@ -139,7 +144,7 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
   }, []);
 
   const updateActivePillRect = React.useCallback(() => {
-    if (!usesActivePillIndicator || !activeId) {
+    if (!usesIndicator || !activeId) {
       setPillRect((prev) => (prev === null ? prev : null));
       return;
     }
@@ -172,7 +177,7 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
     };
 
     setPillRect((prev) => (isSamePillRect(prev, nextRect) ? prev : nextRect));
-  }, [activeId, isSamePillRect, usesActivePillIndicator]);
+  }, [activeId, isSamePillRect, usesIndicator]);
 
   const updateOverflow = React.useCallback(() => {
     if (!isScrollable) {
@@ -215,7 +220,7 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
   }, [isScrollable, items.length, updateOverflow]);
 
   React.useEffect(() => {
-    if (!usesActivePillIndicator) {
+    if (!usesIndicator) {
       setPillRect(null);
       return;
     }
@@ -240,7 +245,7 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
     return () => {
       observer.disconnect();
     };
-  }, [activeId, items.length, updateActivePillRect, usesActivePillIndicator]);
+  }, [activeId, items.length, updateActivePillRect, usesIndicator]);
 
   React.useLayoutEffect(() => {
     updateActivePillRect();
@@ -319,26 +324,40 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
           usesActivePillIndicator && '@container/pill-tabs',
           usesActivePillIndicator && 'pill-tabs__track',
           usesActivePillIndicator && (activePillInsetClassName ?? 'gap-0.5 py-0.5'),
-          showPillTrackBackground && 'rounded-lg bg-[var(--surface-muted)]/50',
+          useUnderlineIndicator && 'items-center overflow-y-hidden',
+          showPillTrackBackground && 'rounded-[10px] [corner-shape:squircle] supports-[corner-shape:squircle]:rounded-[50px] bg-[color-mix(in_srgb,var(--foreground)_2%,transparent)] p-0.5 gap-0.5',
           isScrollable
             ? 'overflow-x-auto scrollbar-none'
             : 'overflow-x-hidden',
         )}
         style={isScrollable ? { scrollbarWidth: 'none', msOverflowStyle: 'none' } : undefined}
         role="tablist"
-        aria-label="Tabs"
+        aria-label={t('sortableTabsStrip.aria.tabs')}
       >
         {usesActivePillIndicator && pillRect ? (
           <div
             className={cn(
-              'pointer-events-none absolute left-0 top-0 z-0 rounded-lg border border-[var(--interactive-border)] bg-[var(--surface-elevated)]',
-              shouldAnimateActivePill && 'transition-[transform,width,height] duration-200 ease-out'
+              'pointer-events-none absolute left-0 top-0 z-0 rounded-[9px] [corner-shape:squircle] supports-[corner-shape:squircle]:rounded-[50px] bg-[var(--surface-elevated)]',
+              'border border-border/60'
             )}
             style={{
-              transform: `translate(${pillRect.left}px, ${pillRect.top}px)`,
+              transform: `translate3d(${pillRect.left}px, ${pillRect.top}px, 0)`,
               width: `${pillRect.width}px`,
               height: `${pillRect.height}px`,
+              transition: shouldAnimateActivePill
+                ? 'transform 300ms cubic-bezier(0.65, 0, 0.35, 1), width 300ms cubic-bezier(0.65, 0, 0.35, 1), height 300ms cubic-bezier(0.65, 0, 0.35, 1)'
+                : undefined,
             }}
+          />
+        ) : null}
+        {useUnderlineIndicator && pillRect ? (
+          <div
+            className="pointer-events-none absolute left-0 -bottom-px z-10 h-[3px] rounded-t-[2px] bg-[var(--primary-base)]"
+            style={{
+              transform: `translate3d(${pillRect.left}px, 0, 0)`,
+              width: `${pillRect.width}px`,
+            }}
+            aria-hidden
           />
         ) : null}
         {items.map((item) => {
@@ -347,6 +366,7 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
           const shouldShowLabel = !showInactiveIconOnly;
           const useIntrinsicActiveTab = inactiveTabsIconOnly && usesActivePillIndicator && isActive && !isScrollable && !useIntrinsicPillSizing;
           const closable = item.closable !== false && Boolean(onClose);
+          const closeReplacesIcon = closable && Boolean(item.icon);
           const wrapperClassName = (isScrollable || useIntrinsicPillSizing)
             ? undefined
             : usesActivePillIndicator
@@ -368,8 +388,8 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
                   usesActivePillIndicator
                     ? 'relative z-10 bg-transparent'
                     : isActive
-                      ? 'border-r border-border/40 bg-[var(--surface-elevated)] text-foreground'
-                      : 'border-r border-border/40 bg-[var(--surface-elevated)]/25 text-muted-foreground hover:bg-[var(--surface-elevated)]/65 hover:text-foreground'
+                      ? 'relative z-10 bg-transparent text-foreground'
+                      : 'relative z-10 bg-transparent text-muted-foreground hover:text-foreground'
                 )}
               >
                 <button
@@ -380,9 +400,8 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
                   onClick={() => onSelect(item.id)}
                   className={cn(
                     usesActivePillIndicator
-                      ? 'animated-tabs__button pill-tabs__button relative z-10 flex flex-1 items-center justify-center rounded-lg text-sm font-medium transition-colors duration-150 !min-h-0'
+                      ? 'animated-tabs__button pill-tabs__button relative z-10 flex flex-1 items-center justify-center rounded-[9px] [corner-shape:squircle] supports-[corner-shape:squircle]:rounded-[50px] text-sm font-medium transition-colors duration-150 !min-h-0'
                       : 'flex h-full min-w-0 items-center typography-micro',
-                    usesActivePillIndicator && closable && '!flex-none',
                     usesActivePillIndicator && activePillLowercase ? 'lowercase' : null,
                     usesActivePillIndicator && (showInactiveIconOnly ? 'gap-0' : 'gap-1.5'),
                     usesActivePillIndicator
@@ -396,10 +415,10 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
                               ? 'shrink-0 whitespace-nowrap px-3 text-center'
                               : 'px-3 text-center')
                       : isScrollable
-                        ? 'max-w-56 justify-start truncate pl-3 pr-2 text-left'
-                        : 'w-full justify-center truncate px-2.5 text-center',
+                        ? 'max-w-56 justify-start truncate px-3 text-left'
+                        : 'w-full justify-center truncate px-3 text-center',
                     usesActivePillIndicator
-                      ? (activePillButtonClassName ?? (isActivePillVariant ? (isMobile ? 'h-[34px]' : 'h-[27px]') : 'h-7'))
+                      ? (activePillButtonClassName ?? (isActivePillVariant ? (isMobile ? 'h-[38px]' : 'h-[31px]') : 'h-7'))
                       : null,
                     usesActivePillIndicator
                       ? isActive
@@ -414,17 +433,66 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
                 >
                   {usesActivePillIndicator ? (
                     <>
-                      {item.icon ? <span className="flex shrink-0 items-center justify-center">{item.icon}</span> : null}
+                      {item.icon ? (
+                        <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+                          <span className={cn('flex items-center justify-center transition-opacity', closeReplacesIcon && 'group-hover:opacity-0')}>{item.icon}</span>
+                          {closeReplacesIcon ? (
+                            <span
+                              role="button"
+                              tabIndex={-1}
+                              className="absolute inset-0 z-20 flex items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                              onPointerDown={(event) => {
+                                event.stopPropagation();
+                              }}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onClose?.(item.id);
+                              }}
+                              aria-label={item.closeLabel ?? `Close ${item.label} tab`}
+                              title={item.closeLabel ?? `Close ${item.label} tab`}
+                            >
+                              <RiCloseLine className="h-3.5 w-3.5" />
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : null}
                       {shouldShowLabel ? <span className="animated-tabs__label truncate">{item.label}</span> : null}
                     </>
                   ) : (
                     <span className={cn('flex min-w-0 items-center gap-1.5', !isScrollable && 'justify-center')}>
-                      {item.icon ? <span className="flex shrink-0 items-center justify-center">{item.icon}</span> : null}
+                      {item.icon ? (
+                        <span
+                          className={cn(
+                            'relative flex h-4 w-4 shrink-0 items-center justify-center transition-colors duration-200 ease-out',
+                            isActive ? 'text-[var(--primary-base)]' : 'text-muted-foreground'
+                          )}
+                        >
+                          <span className={cn('flex items-center justify-center transition-opacity', closeReplacesIcon && 'group-hover:opacity-0')}>{item.icon}</span>
+                          {closeReplacesIcon ? (
+                            <span
+                              role="button"
+                              tabIndex={-1}
+                              className="absolute inset-0 z-20 flex items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                              onPointerDown={(event) => {
+                                event.stopPropagation();
+                              }}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onClose?.(item.id);
+                              }}
+                              aria-label={item.closeLabel ?? `Close ${item.label} tab`}
+                              title={item.closeLabel ?? `Close ${item.label} tab`}
+                            >
+                              <RiCloseLine className="h-3.5 w-3.5" />
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : null}
                       <span className="truncate leading-[1.2]">{item.label}</span>
                     </span>
                   )}
                 </button>
-                {closable ? (
+                {closable && !closeReplacesIcon ? (
                   <button
                     type="button"
                     onPointerDown={(event) => {

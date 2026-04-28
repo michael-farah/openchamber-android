@@ -1,7 +1,5 @@
 import React from 'react';
-import { Text } from '@/components/ui/text';
-// import { SessionActiveSpinner } from './SessionActiveSpinner';
-import { GenericStatusSpinner } from './GenericStatusSpinner';
+import { BusyDots } from './BusyDots';
 
 interface WorkingPlaceholderProps {
   isWorking: boolean;
@@ -63,6 +61,10 @@ export function WorkingPlaceholder({
 }: WorkingPlaceholderProps) {
   const [displayedText, setDisplayedText] = React.useState<string | null>(null);
   const [displayedPermission, setDisplayedPermission] = React.useState<boolean>(false);
+  const displayedTextRef = React.useRef(displayedText);
+  const displayedPermissionRef = React.useRef(displayedPermission);
+  displayedTextRef.current = displayedText;
+  displayedPermissionRef.current = displayedPermission;
 
   const statusShownAtRef = React.useRef<number>(0);
   const queuedStatusRef = React.useRef<{ text: string; permission: boolean } | null>(null);
@@ -143,12 +145,12 @@ export function WorkingPlaceholder({
       return;
     }
 
-    if (!displayedText) {
+    if (!displayedTextRef.current) {
       showStatus(incomingText, incomingPermission);
       return;
     }
 
-    if (incomingText === displayedText && incomingPermission === displayedPermission) {
+    if (incomingText === displayedTextRef.current && incomingPermission === displayedPermissionRef.current) {
       return;
     }
 
@@ -171,8 +173,6 @@ export function WorkingPlaceholder({
     isGenericStatus,
     isWaitingForPermission,
     retryInfo,
-    displayedText,
-    displayedPermission,
     clearTimers,
     showStatus,
     scheduleQueueProcess,
@@ -190,20 +190,18 @@ export function WorkingPlaceholder({
     const countdownLabel = retryCountdown !== null && retryCountdown > 0
       ? ` in ${formatRetryCountdown(retryCountdown)}`
       : '';
-    const retryText = `Retrying${countdownLabel}${attemptLabel}...`;
+    const retryText = `Retrying${countdownLabel}${attemptLabel}`;
 
     return (
       <div
         className="flex h-full items-center text-muted-foreground pl-0.5"
         role="status"
         aria-live="polite"
-        aria-label={retryText}
+        aria-label={`${retryText}...`}
       >
-        <span className="flex items-center gap-1">
-          <GenericStatusSpinner className="size-[15px] shrink-0" />
-          <Text variant="shine" className="typography-ui-header">
-            {retryText}
-          </Text>
+        <span className="typography-ui-header">
+          {retryText}
+          <BusyDots />
         </span>
       </div>
     );
@@ -214,7 +212,6 @@ export function WorkingPlaceholder({
   }
 
   const label = displayedText.charAt(0).toUpperCase() + displayedText.slice(1);
-  const displayText = `${label}...`;
 
   return (
     <div
@@ -226,11 +223,9 @@ export function WorkingPlaceholder({
       aria-label={label}
       data-waiting={displayedPermission ? 'true' : undefined}
     >
-      <span className="flex items-center gap-1">
-        <GenericStatusSpinner className="size-[15px] shrink-0" />
-        <Text variant="shine" className="typography-ui-header">
-          {displayText}
-        </Text>
+      <span className="typography-ui-header">
+        {label}
+        <BusyDots />
       </span>
     </div>
   );

@@ -51,7 +51,8 @@ export default defineConfig({
         // iOS Safari/PWA is much more reliable with a classic (non-module) SW bundle.
         rollupFormat: 'iife',
         // We already keep a custom manifest in index.html
-        injectionPoint: undefined,
+        injectionPoint: 'self.__WB_MANIFEST',
+        maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
       },
       devOptions: {
         enabled: pwaDevEnabled,
@@ -99,7 +100,7 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, 'dist'),
     emptyOutDir: true,
-    chunkSizeWarningLimit: 1200,
+    chunkSizeWarningLimit: 500,
     rollupOptions: {
       external: ['node:child_process', 'node:fs', 'node:path', 'node:url'],
       output: {
@@ -117,7 +118,7 @@ export default defineConfig({
 
           if (packageName === '@opencode-ai/sdk') return 'vendor-opencode-sdk';
           if (packageName.includes('remark') || packageName.includes('rehype') || packageName === 'react-markdown') return 'vendor-markdown';
-          if (packageName.startsWith('@radix-ui')) return 'vendor-radix';
+          if (packageName === '@base-ui/react' || packageName.startsWith('@base-ui')) return 'vendor-base-ui';
           if (packageName.includes('react-syntax-highlighter') || packageName.includes('highlight.js')) return 'vendor-syntax';
 
           const sanitized = packageName.replace(/^@/, '').replace(/\//g, '-');

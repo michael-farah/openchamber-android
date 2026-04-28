@@ -1,11 +1,20 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSessions } from '@/sync/sync-context';
 import { useInputStore } from '@/sync/input-store';
 import { useUIStore } from '@/stores/useUIStore';
-import { RiChatNewLine, RiAddLine, RiFileCopyLine } from '@remixicon/react';
+import { useProjectsStore } from '@/stores/useProjectsStore';
+import { RiBookletLine, RiChatNewLine, RiAddLine, RiFileCopyLine, RiLoader4Line } from '@remixicon/react';
 import { cn } from '@/lib/utils';
 import { copyTextToClipboard } from '@/lib/clipboard';
+import { toast } from '@/components/ui';
+import { getProjectNotesAndTodos, saveProjectNotesAndTodos } from '@/lib/openchamberConfig';
+import { resolveProjectForSessionDirectory } from '@/lib/projectResolution';
+import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { summarizeText } from '@/lib/voice/summarize';
+import { isVSCodeRuntime } from '@/lib/desktop';
+import { useI18n } from '@/lib/i18n';
 
 interface TextSelectionMenuProps {
   containerRef: React.RefObject<HTMLElement | null>;
@@ -22,6 +31,17 @@ interface SelectionPayload {
   markdownText: string;
   rect: DOMRect;
 }
+
+
+const appendDistilledInsightToNotes = (existingNotes: string, insight: string): string => {
+  const trimmedInsight = insight.trim().replace(/^[-*+]\s+/, '');
+  if (!trimmedInsight) {
+    return existingNotes;
+  }
+
+  const trimmedNotes = existingNotes.trimEnd();
+  return trimmedNotes ? `${trimmedNotes}\n${trimmedInsight}` : trimmedInsight;
+};
 
 const DESKTOP_MENU_SIDE_MARGIN_PX = 8;
 const DESKTOP_MENU_FALLBACK_WIDTH_PX = 280;
@@ -187,19 +207,26 @@ const rangeToMarkdown = (range: Range, plainText: string): string => {
 };
 
 export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerRef }) => {
+  const { t } = useI18n();
   const [position, setPosition] = React.useState<MenuPosition>({ x: 0, y: 0, show: false });
   const [selectedText, setSelectedText] = React.useState('');
   const [selectedTextMarkdown, setSelectedTextMarkdown] = React.useState('');
-  const [isDragging, setIsDragging] = React.useState(false);
+  const isDraggingRef = React.useRef(false);
   const [isOpening, setIsOpening] = React.useState(false);
+  const [isAddingToNotes, setIsAddingToNotes] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
   const menuWidthRef = React.useRef(DESKTOP_MENU_FALLBACK_WIDTH_PX);
   const pendingSelectionRef = React.useRef<SelectionPayload | null>(null);
   const openRafRef = React.useRef<number | null>(null);
   const isMenuVisibleRef = React.useRef(false);
   const createSession = useSessionUIStore((state) => state.createSession);
+  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const setPendingInputText = useInputStore((state) => state.setPendingInputText);
   const isMobile = useUIStore((state) => state.isMobile);
+  const projects = useProjectsStore((state) => state.projects);
+  const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
+  const effectiveDirectory = useEffectiveDirectory();
+  const sessions = useSessions();
 
   React.useEffect(() => {
     isMenuVisibleRef.current = position.show;
@@ -324,7 +351,7 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     const container = containerRef.current;
 
     if (!selection || !container) {
-      if (!isDragging) {
+      if (!isDraggingRef.current) {
         hideMenu();
       }
       return;
@@ -334,7 +361,7 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
 
     // Only show if we have text and the selection is within our container
     if (!text) {
-      if (!isDragging) {
+      if (!isDraggingRef.current) {
         hideMenu();
       }
       return;
@@ -344,7 +371,7 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     const range = selection.getRangeAt(0);
     
     if (!container.contains(range.commonAncestorContainer)) {
-      if (!isDragging) {
+      if (!isDraggingRef.current) {
         hideMenu();
       }
       return;
@@ -361,10 +388,10 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     };
 
     // Only show menu if we're not currently dragging
-    if (!isDragging) {
+    if (!isDraggingRef.current) {
       showMenu();
     }
-  }, [containerRef, hideMenu, showMenu, isDragging]);
+  }, [containerRef, hideMenu, showMenu]);
 
   React.useEffect(() => {
     const container = containerRef.current;
@@ -372,13 +399,13 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
 
     // Track when dragging starts
     const handleMouseDown = () => {
-      setIsDragging(true);
+      isDraggingRef.current = true;
       hideMenu();
     };
 
     // Track when dragging stops
     const handleMouseUp = () => {
-      setIsDragging(false);
+      isDraggingRef.current = false;
       // Check if we have a pending selection to show
       if (pendingSelectionRef.current) {
         // Small delay to ensure selection is finalized
@@ -456,6 +483,59 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     window.getSelection()?.removeAllRanges();
   }, [selectedText, hideMenu]);
 
+  const currentSession = React.useMemo(() => {
+    if (!currentSessionId) {
+      return null;
+    }
+    return sessions.find((session) => session.id === currentSessionId) ?? null;
+  }, [currentSessionId, sessions]);
+
+  const currentProjectRef = React.useMemo(() => {
+    const directory = effectiveDirectory
+      ?? (typeof currentSession?.directory === 'string' ? currentSession.directory : '');
+    const resolved = resolveProjectForSessionDirectory(projects, availableWorktreesByProject, directory);
+    return resolved ? { id: resolved.id, path: resolved.path } : null;
+  }, [availableWorktreesByProject, currentSession?.directory, effectiveDirectory, projects]);
+
+  const handleAddToNotes = React.useCallback(async () => {
+    if (!selectedText || !currentProjectRef) {
+      if (!currentProjectRef) {
+        toast.error(t('chat.textSelection.toast.noProject'));
+      }
+      return;
+    }
+
+    try {
+      setIsAddingToNotes(true);
+      const distilledInsight = await summarizeText(selectedText, {
+        threshold: 0,
+        maxLength: 100,
+        mode: 'note',
+      });
+      const projectData = await getProjectNotesAndTodos(currentProjectRef);
+      const nextNotes = appendDistilledInsightToNotes(projectData.notes, distilledInsight);
+      const saved = await saveProjectNotesAndTodos(currentProjectRef, {
+        notes: nextNotes,
+        todos: projectData.todos,
+      });
+      if (!saved) {
+        toast.error(t('chat.textSelection.toast.addToNotesFailed'));
+        return;
+      }
+      window.dispatchEvent(new CustomEvent('openchamber:project-notes-updated', {
+        detail: { projectId: currentProjectRef.id },
+      }));
+      toast.success(t('chat.textSelection.toast.addToNotesSuccess'));
+      hideMenu();
+      window.getSelection()?.removeAllRanges();
+    } catch (error) {
+      const description = error instanceof Error ? error.message : undefined;
+      toast.error(t('chat.textSelection.toast.addToNotesFailed'), description ? { description } : undefined);
+    } finally {
+      setIsAddingToNotes(false);
+    }
+  }, [currentProjectRef, hideMenu, selectedText, t]);
+
   if (!position.show) return null;
 
   // Mobile: Show as a bar at the bottom of the screen, above the keyboard
@@ -464,62 +544,85 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
       <div
         ref={menuRef}
         className={cn(
-          'fixed left-0 right-0 bottom-0 z-50',
-          'flex items-center justify-center gap-4',
-          'bg-[var(--surface-elevated)] border-t border-[var(--interactive-border)]',
-          'px-3 py-2',
+          'fixed left-3 right-3 bottom-0 z-50 mx-auto max-w-[420px]',
+          'rounded-2xl border border-[var(--interactive-border)]',
+          'bg-[var(--surface-elevated)] p-2 shadow-lg',
           'safe-area-bottom',
           'transition-[opacity,transform] duration-200 ease-out will-change-[opacity,transform]',
           isOpening ? 'opacity-0 translate-y-[4px]' : 'opacity-100 translate-y-0'
         )}
         style={{
-          paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom, 0px))',
+          bottom: 'calc(0.5rem + env(safe-area-inset-bottom, 0px))',
         }}
       >
-        <button
-          onClick={handleAddToChat}
-          className={cn(
-            'flex items-center gap-2 px-3 py-2 rounded-lg',
-            'text-sm font-medium',
-            'bg-[var(--primary-base)] text-[var(--primary-foreground)]',
-            'active:opacity-80',
-            'transition-opacity duration-150'
-          )}
-          type="button"
-        >
-          <RiAddLine className="h-5 w-5" />
-          <span>Add to chat</span>
-        </button>
-        
-        <button
-          onClick={handleCreateNewSession}
-          className={cn(
-            'flex items-center gap-2 px-3 py-2 rounded-lg',
-            'text-sm font-medium',
-            'bg-[var(--interactive-selection)] text-[var(--interactive-selection-foreground)]',
-            'active:opacity-80',
-            'transition-opacity duration-150'
-          )}
-          type="button"
-        >
-          <RiChatNewLine className="h-5 w-5" />
-          <span>New session</span>
-        </button>
-        
-        <button
-          onClick={handleCopy}
-          className={cn(
-            'flex items-center gap-2 px-3 py-2 rounded-lg',
-            'text-sm font-medium',
-            'bg-[var(--surface-muted)] text-[var(--surface-foreground)]',
-            'active:opacity-80',
-            'transition-opacity duration-150'
-          )}
-          type="button"
-        >
-          <RiFileCopyLine className="h-5 w-5" />
-          <span>Copy</span>
-        </button>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={handleAddToChat}
+            className={cn(
+              'flex min-w-0 items-center gap-2 rounded-xl px-3 py-2.5 text-left',
+              'text-sm font-medium leading-tight',
+              'bg-[var(--primary-base)] text-[var(--primary-foreground)]',
+              'active:opacity-80',
+              'transition-opacity duration-150'
+            )}
+            title={t('chat.textSelection.title.addToCurrentChat')}
+            type="button"
+          >
+            <RiAddLine className="h-5 w-5 flex-shrink-0" />
+            <span className="min-w-0 whitespace-normal">{t('chat.textSelection.actions.addToChat')}</span>
+          </button>
+
+          <button
+            onClick={handleCreateNewSession}
+            className={cn(
+              'flex min-w-0 items-center gap-2 rounded-xl px-3 py-2.5 text-left',
+              'text-sm font-medium leading-tight',
+              'bg-[var(--interactive-selection)] text-[var(--interactive-selection-foreground)]',
+              'active:opacity-80',
+              'transition-opacity duration-150'
+            )}
+            title={t('chat.textSelection.title.newSessionWithSelection')}
+            type="button"
+          >
+            <RiChatNewLine className="h-5 w-5 flex-shrink-0" />
+            <span className="min-w-0 whitespace-normal">{t('chat.textSelection.actions.newSession')}</span>
+          </button>
+
+          <button
+            onClick={handleCopy}
+            className={cn(
+              'flex min-w-0 items-center gap-2 rounded-xl px-3 py-2.5 text-left',
+              'text-sm font-medium leading-tight',
+              'bg-[var(--surface-muted)] text-[var(--surface-foreground)]',
+              'active:opacity-80',
+              'transition-opacity duration-150'
+            )}
+            title={t('chat.textSelection.actions.copy')}
+            type="button"
+          >
+            <RiFileCopyLine className="h-5 w-5 flex-shrink-0" />
+            <span className="min-w-0 whitespace-normal">{t('chat.textSelection.actions.copy')}</span>
+          </button>
+
+          {!isVSCodeRuntime() ? (
+            <button
+              onClick={handleAddToNotes}
+              disabled={isAddingToNotes}
+              className={cn(
+                'flex min-w-0 items-center gap-2 rounded-xl px-3 py-2.5 text-left',
+                'text-sm font-medium leading-tight',
+                'bg-[var(--surface-muted)] text-[var(--surface-foreground)]',
+                'active:opacity-80 disabled:opacity-60 disabled:cursor-not-allowed',
+                'transition-opacity duration-150'
+              )}
+              title={t('chat.textSelection.title.saveInsightToNotes')}
+              type="button"
+            >
+              {isAddingToNotes ? <RiLoader4Line className="h-5 w-5 flex-shrink-0 animate-spin" /> : <RiBookletLine className="h-5 w-5 flex-shrink-0" />}
+              <span className="min-w-0 whitespace-normal">{t('chat.textSelection.actions.addToNotes')}</span>
+            </button>
+          ) : null}
+        </div>
       </div>,
       document.body
     );
@@ -555,11 +658,11 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
             'hover:bg-[var(--interactive-hover)]',
             'transition-colors duration-150'
           )}
-          title="Add to current chat"
+          title={t('chat.textSelection.title.addToCurrentChat')}
           type="button"
         >
           <RiAddLine className="h-4 w-4" />
-          <span className="whitespace-nowrap">Add to chat</span>
+          <span className="whitespace-nowrap">{t('chat.textSelection.actions.addToChat')}</span>
         </button>
       
         <div className="w-px h-4 bg-[var(--interactive-border)]" />
@@ -573,12 +676,35 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
             'hover:bg-[var(--interactive-hover)]',
             'transition-colors duration-150'
           )}
-          title="Create new session with selection"
+          title={t('chat.textSelection.title.newSessionWithSelection')}
           type="button"
         >
           <RiChatNewLine className="h-4 w-4" />
-          <span className="whitespace-nowrap">New session</span>
+          <span className="whitespace-nowrap">{t('chat.textSelection.actions.newSession')}</span>
         </button>
+
+        {!isVSCodeRuntime() ? (
+          <>
+            <div className="w-px h-4 bg-[var(--interactive-border)]" />
+
+            <button
+              onClick={handleAddToNotes}
+              disabled={isAddingToNotes}
+              className={cn(
+                'flex items-center gap-1.5 px-2 py-1 rounded-md',
+                'text-sm font-medium',
+                'text-[var(--surface-foreground)]',
+                'hover:bg-[var(--interactive-hover)] disabled:opacity-60 disabled:cursor-not-allowed',
+                'transition-colors duration-150'
+              )}
+              title={t('chat.textSelection.title.saveInsightToNotes')}
+              type="button"
+            >
+              {isAddingToNotes ? <RiLoader4Line className="h-4 w-4 animate-spin" /> : <RiBookletLine className="h-4 w-4" />}
+              <span className="whitespace-nowrap">{t('chat.textSelection.actions.addToNotes')}</span>
+            </button>
+          </>
+        ) : null}
       </div>
     </div>,
     document.body

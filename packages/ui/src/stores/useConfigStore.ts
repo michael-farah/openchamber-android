@@ -28,7 +28,9 @@ interface OpenChamberDefaults {
     defaultAgent?: string;
     autoCreateWorktree?: boolean;
     gitmojiEnabled?: boolean;
+    defaultFileViewerPreview?: boolean;
     zenModel?: string;
+    messageStreamTransport?: 'auto' | 'ws' | 'sse';
 }
 
 const fetchOpenChamberDefaults = async (): Promise<OpenChamberDefaults> => {
@@ -44,7 +46,12 @@ const fetchOpenChamberDefaults = async (): Promise<OpenChamberDefaults> => {
                     const defaultVariant = typeof data?.defaultVariant === 'string' ? data.defaultVariant.trim() : '';
                     const defaultAgent = typeof data?.defaultAgent === 'string' ? data.defaultAgent.trim() : '';
                     const gitmojiEnabled = typeof data?.gitmojiEnabled === 'boolean' ? data.gitmojiEnabled : undefined;
+                    const defaultFileViewerPreview = typeof data?.defaultFileViewerPreview === 'boolean' ? data.defaultFileViewerPreview : undefined;
                     const zenModel = typeof data?.zenModel === 'string' ? data.zenModel.trim() : '';
+                    const messageStreamTransport =
+                        data?.messageStreamTransport === 'ws' || data?.messageStreamTransport === 'sse' || data?.messageStreamTransport === 'auto'
+                            ? data.messageStreamTransport
+                            : undefined;
 
                     return {
                         defaultModel: defaultModel.length > 0 ? defaultModel : undefined,
@@ -52,7 +59,9 @@ const fetchOpenChamberDefaults = async (): Promise<OpenChamberDefaults> => {
                         defaultAgent: defaultAgent.length > 0 ? defaultAgent : undefined,
                         autoCreateWorktree: typeof data?.autoCreateWorktree === 'boolean' ? data.autoCreateWorktree : undefined,
                         gitmojiEnabled,
+                        defaultFileViewerPreview,
                         zenModel: zenModel.length > 0 ? zenModel : undefined,
+                        messageStreamTransport,
                     };
                 }
             } catch {
@@ -73,7 +82,12 @@ const fetchOpenChamberDefaults = async (): Promise<OpenChamberDefaults> => {
         const defaultVariant = typeof data?.defaultVariant === 'string' ? data.defaultVariant.trim() : '';
         const defaultAgent = typeof data?.defaultAgent === 'string' ? data.defaultAgent.trim() : '';
         const gitmojiEnabled = typeof data?.gitmojiEnabled === 'boolean' ? data.gitmojiEnabled : undefined;
+        const defaultFileViewerPreview = typeof data?.defaultFileViewerPreview === 'boolean' ? data.defaultFileViewerPreview : undefined;
         const zenModel = typeof data?.zenModel === 'string' ? data.zenModel.trim() : '';
+        const messageStreamTransport =
+            data?.messageStreamTransport === 'ws' || data?.messageStreamTransport === 'sse' || data?.messageStreamTransport === 'auto'
+                ? data.messageStreamTransport
+                : undefined;
 
         return {
             defaultModel: defaultModel.length > 0 ? defaultModel : undefined,
@@ -81,7 +95,9 @@ const fetchOpenChamberDefaults = async (): Promise<OpenChamberDefaults> => {
             defaultAgent: defaultAgent.length > 0 ? defaultAgent : undefined,
             autoCreateWorktree: typeof data?.autoCreateWorktree === 'boolean' ? data.autoCreateWorktree : undefined,
             gitmojiEnabled,
+            defaultFileViewerPreview,
             zenModel: zenModel.length > 0 ? zenModel : undefined,
+            messageStreamTransport,
         };
     } catch {
         return {};
@@ -410,6 +426,14 @@ const ensureModelsMetadataFetch = (
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const CONNECTION_PROBE_TIMEOUT_MS = 800;
+
+const probeOpenCodeHealth = async (timeoutMs = CONNECTION_PROBE_TIMEOUT_MS): Promise<boolean> => {
+    return Promise.race([
+        opencodeClient.checkHealth().catch(() => false),
+        sleep(Math.max(1, timeoutMs)).then(() => false),
+    ]);
+};
 
 const DIRECTORY_KEY_GLOBAL = "__global__";
 
@@ -457,6 +481,9 @@ interface ConfigStore {
     agentModelSelections: { [agentName: string]: { providerId: string; modelId: string } };
     defaultProviders: { [key: string]: string };
     isConnected: boolean;
+    hasEverConnected: boolean;
+    connectionPhase: "connecting" | "connected" | "reconnecting";
+    lastDisconnectReason: string | null;
     isInitialized: boolean;
     modelsMetadata: Map<string, ModelMetadata>;
     // OpenChamber settings-based defaults (take precedence over agent preferences)
@@ -465,7 +492,9 @@ interface ConfigStore {
     settingsDefaultAgent: string | undefined;
     settingsAutoCreateWorktree: boolean;
     settingsGitmojiEnabled: boolean;
+    settingsDefaultFileViewerPreview: boolean;
     settingsZenModel: string | undefined;
+    settingsMessageStreamTransport: 'auto' | 'ws' | 'sse';
     // Voice provider preference ('browser', 'openai', 'openai-compatible', or 'say' for macOS)
     voiceProvider: 'browser' | 'openai' | 'openai-compatible' | 'say';
     setVoiceProvider: (provider: 'browser' | 'openai' | 'openai-compatible' | 'say') => void;
@@ -533,10 +562,13 @@ interface ConfigStore {
     setSettingsDefaultAgent: (agent: string | undefined) => void;
     setSettingsAutoCreateWorktree: (enabled: boolean) => void;
     setSettingsGitmojiEnabled: (enabled: boolean) => void;
+    setSettingsDefaultFileViewerPreview: (enabled: boolean) => void;
     setSettingsZenModel: (model: string | undefined) => void;
+    setSettingsMessageStreamTransport: (transport: 'auto' | 'ws' | 'sse') => void;
     getResolvedGitGenerationModel: () => { providerId: string; modelId: string } | null;
     saveAgentModelSelection: (agentName: string, providerId: string, modelId: string) => void;
     getAgentModelSelection: (agentName: string) => { providerId: string; modelId: string } | null;
+    probeConnection: (options?: { timeoutMs?: number }) => Promise<boolean>;
     checkConnection: () => Promise<boolean>;
     initializeApp: () => Promise<void>;
     getCurrentProvider: () => ProviderWithModelList | undefined;
@@ -575,6 +607,9 @@ export const useConfigStore = create<ConfigStore>()(
                 agentModelSelections: {},
                 defaultProviders: {},
                 isConnected: false,
+                hasEverConnected: false,
+                connectionPhase: "connecting",
+                lastDisconnectReason: null,
                 isInitialized: false,
                 modelsMetadata: new Map<string, ModelMetadata>(),
                 settingsDefaultModel: undefined,
@@ -582,7 +617,9 @@ export const useConfigStore = create<ConfigStore>()(
                 settingsDefaultAgent: undefined,
                 settingsAutoCreateWorktree: false,
                 settingsGitmojiEnabled: false,
+                settingsDefaultFileViewerPreview: false,
                 settingsZenModel: undefined,
+                settingsMessageStreamTransport: 'auto',
                 // Voice provider preference - load from localStorage or default to 'browser'
                 voiceProvider: (() => {
                     if (typeof window !== 'undefined') {
@@ -1255,7 +1292,9 @@ export const useConfigStore = create<ConfigStore>()(
                                     settingsDefaultAgent: openChamberDefaults.defaultAgent,
                                     settingsAutoCreateWorktree: openChamberDefaults.autoCreateWorktree ?? false,
                                     settingsGitmojiEnabled: openChamberDefaults.gitmojiEnabled ?? false,
+                                    settingsDefaultFileViewerPreview: openChamberDefaults.defaultFileViewerPreview ?? false,
                                     settingsZenModel: resolvedZenModel,
+                                    settingsMessageStreamTransport: openChamberDefaults.messageStreamTransport ?? state.settingsMessageStreamTransport ?? 'auto',
                                     directoryScoped: {
                                         ...state.directoryScoped,
                                         [directoryKey]: nextSnapshot,
@@ -1512,7 +1551,14 @@ export const useConfigStore = create<ConfigStore>()(
                 },
 
                 setAgent: (agentName: string | undefined) => {
-                    const { agents, providers, settingsDefaultModel, settingsDefaultVariant } = get();
+                    const {
+                        agents,
+                        providers,
+                        settingsDefaultModel,
+                        settingsDefaultVariant,
+                        currentProviderId,
+                        currentModelId,
+                    } = get();
 
                     set((state) => {
                         const directoryKey = state.activeDirectoryKey;
@@ -1560,11 +1606,64 @@ export const useConfigStore = create<ConfigStore>()(
                     if (agentName) {
                         const { currentSessionId } = useSessionUIStore.getState();
 
+                        const applyResolvedModelSelection = (providerId: string, modelId: string, variant?: string) => {
+                            set((state) => {
+                                const directoryKey = state.activeDirectoryKey;
+                                const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
+                                    providers: state.providers,
+                                    agents: state.agents,
+                                    currentProviderId: state.currentProviderId,
+                                    currentModelId: state.currentModelId,
+                                    currentVariant: state.currentVariant,
+                                    currentAgentName: state.currentAgentName,
+                                    selectedProviderId: state.selectedProviderId,
+                                    agentModelSelections: state.agentModelSelections,
+                                    defaultProviders: state.defaultProviders,
+                                };
+
+                                const nextSnapshot: DirectoryScopedConfig = {
+                                    ...baseSnapshot,
+                                    currentProviderId: providerId,
+                                    currentModelId: modelId,
+                                    currentVariant: variant,
+                                    selectedProviderId: providerId,
+                                };
+
+                                return {
+                                    currentProviderId: providerId,
+                                    currentModelId: modelId,
+                                    currentVariant: variant,
+                                    selectedProviderId: providerId,
+                                    directoryScoped: {
+                                        ...state.directoryScoped,
+                                        [directoryKey]: nextSnapshot,
+                                    },
+                                };
+                            });
+                        };
+
                         if (currentSessionId) {
                             const existingAgentModel = useSelectionStore.getState().getAgentModelForSession(currentSessionId, agentName);
-                            if (existingAgentModel) {
+                            if (existingAgentModel && hasProviderModel(providers, existingAgentModel.providerId, existingAgentModel.modelId)) {
+                                const savedVariant = useSelectionStore.getState().getAgentModelVariantForSession(
+                                    currentSessionId,
+                                    agentName,
+                                    existingAgentModel.providerId,
+                                    existingAgentModel.modelId,
+                                );
+                                if (
+                                    currentProviderId !== existingAgentModel.providerId
+                                    || currentModelId !== existingAgentModel.modelId
+                                    || get().currentVariant !== savedVariant
+                                ) {
+                                    applyResolvedModelSelection(existingAgentModel.providerId, existingAgentModel.modelId, savedVariant);
+                                }
                                 return;
                             }
+                        }
+
+                        if (hasProviderModel(providers, currentProviderId, currentModelId)) {
+                            return;
                         }
 
                         // If settings has a default model, use it instead of agent's preferred
@@ -1573,47 +1672,16 @@ export const useConfigStore = create<ConfigStore>()(
                             if (parsed) {
                                 const settingsProvider = providers.find((p) => p.id === parsed.providerId);
                                 if (settingsProvider?.models.some((m) => m.id === parsed.modelId)) {
-                                    set((state) => {
-                                        const directoryKey = state.activeDirectoryKey;
-                                        const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                                            providers: state.providers,
-                                            agents: state.agents,
-                                            currentProviderId: state.currentProviderId,
-                                            currentModelId: state.currentModelId,
-                                            currentVariant: state.currentVariant,
-                                            currentAgentName: state.currentAgentName,
-                                            selectedProviderId: state.selectedProviderId,
-                                            agentModelSelections: state.agentModelSelections,
-                                            defaultProviders: state.defaultProviders,
-                                        };
-
-                                        let nextVariant: string | undefined;
-                                        if (settingsDefaultVariant) {
-                                            const settingsProvider = providers.find((p) => p.id === parsed.providerId);
-                                            const model = settingsProvider?.models.find((m) => m.id === parsed.modelId) as { variants?: Record<string, unknown> } | undefined;
-                                            const variants = model?.variants;
-                                            if (variants && Object.prototype.hasOwnProperty.call(variants, settingsDefaultVariant)) {
-                                                nextVariant = settingsDefaultVariant;
-                                            }
+                                    let nextVariant: string | undefined;
+                                    if (settingsDefaultVariant) {
+                                        const model = settingsProvider.models.find((m) => m.id === parsed.modelId) as { variants?: Record<string, unknown> } | undefined;
+                                        const variants = model?.variants;
+                                        if (variants && Object.prototype.hasOwnProperty.call(variants, settingsDefaultVariant)) {
+                                            nextVariant = settingsDefaultVariant;
                                         }
+                                    }
 
-                                        const nextSnapshot: DirectoryScopedConfig = {
-                                            ...baseSnapshot,
-                                            currentProviderId: parsed.providerId,
-                                            currentModelId: parsed.modelId,
-                                            currentVariant: nextVariant,
-                                        };
-
-                                        return {
-                                            currentProviderId: parsed.providerId,
-                                            currentModelId: parsed.modelId,
-                                            currentVariant: nextVariant,
-                                            directoryScoped: {
-                                                ...state.directoryScoped,
-                                                [directoryKey]: nextSnapshot,
-                                            },
-                                        };
-                                    });
+                                    applyResolvedModelSelection(parsed.providerId, parsed.modelId, nextVariant);
                                     return;
                                 }
                             }
@@ -1628,36 +1696,7 @@ export const useConfigStore = create<ConfigStore>()(
                             const agentModel = agentProvider?.models.find((model) => model.id === modelID);
 
                             if (agentModel) {
-                                set((state) => {
-                                    const directoryKey = state.activeDirectoryKey;
-                                    const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                                        providers: state.providers,
-                                        agents: state.agents,
-                                        currentProviderId: state.currentProviderId,
-                                        currentModelId: state.currentModelId,
-                                        currentAgentName: state.currentAgentName,
-                                        selectedProviderId: state.selectedProviderId,
-                                        agentModelSelections: state.agentModelSelections,
-                                        defaultProviders: state.defaultProviders,
-                                    };
-
-                                    const nextSnapshot: DirectoryScopedConfig = {
-                                        ...baseSnapshot,
-                                        currentProviderId: providerID,
-                                        currentModelId: modelID,
-                                        selectedProviderId: providerID,
-                                    };
-
-                                    return {
-                                        currentProviderId: providerID,
-                                        currentModelId: modelID,
-                                        selectedProviderId: providerID,
-                                        directoryScoped: {
-                                            ...state.directoryScoped,
-                                            [directoryKey]: nextSnapshot,
-                                        },
-                                    };
-                                });
+                                applyResolvedModelSelection(providerID, modelID, undefined);
                             }
                         }
                     }
@@ -1683,8 +1722,16 @@ export const useConfigStore = create<ConfigStore>()(
                     set({ settingsGitmojiEnabled: enabled });
                 },
 
+                setSettingsDefaultFileViewerPreview: (enabled: boolean) => {
+                    set({ settingsDefaultFileViewerPreview: enabled });
+                },
+
                 setSettingsZenModel: (model: string | undefined) => {
                     set({ settingsZenModel: model });
+                },
+
+                setSettingsMessageStreamTransport: (transport: 'auto' | 'ws' | 'sse') => {
+                    set({ settingsMessageStreamTransport: transport });
                 },
 
                 getResolvedGitGenerationModel: () => {
@@ -1861,6 +1908,26 @@ export const useConfigStore = create<ConfigStore>()(
                     }
                 },
 
+                probeConnection: async (options?: { timeoutMs?: number }) => {
+                    const isHealthy = await probeOpenCodeHealth(options?.timeoutMs);
+                    if (isHealthy) {
+                        set({ isConnected: true, hasEverConnected: true, connectionPhase: "connected" });
+                        return true;
+                    }
+
+                    const state = get();
+                    if (state.isConnected) {
+                        return true;
+                    }
+
+                    set({
+                        isConnected: false,
+                        connectionPhase: state.hasEverConnected ? "reconnecting" : "connecting",
+                        lastDisconnectReason: 'health_probe_unhealthy',
+                    });
+                    return false;
+                },
+
                 checkConnection: async () => {
                     const maxAttempts = 5;
                     let attempt = 0;
@@ -1869,7 +1936,14 @@ export const useConfigStore = create<ConfigStore>()(
                     while (attempt < maxAttempts) {
                         try {
                             const isHealthy = await opencodeClient.checkHealth();
-                            set({ isConnected: isHealthy });
+                            const hasEverConnected = get().hasEverConnected;
+                            set(isHealthy
+                                ? { isConnected: true, hasEverConnected: true, connectionPhase: "connected" }
+                                : {
+                                    isConnected: false,
+                                    connectionPhase: hasEverConnected ? "reconnecting" : "connecting",
+                                    lastDisconnectReason: 'health_check_unhealthy',
+                                });
                             return isHealthy;
                         } catch (error) {
                             lastError = error;
@@ -1882,7 +1956,11 @@ export const useConfigStore = create<ConfigStore>()(
                     if (lastError) {
                         console.warn("[ConfigStore] Failed to reach OpenCode after retrying:", lastError);
                     }
-                    set({ isConnected: false });
+                    set({
+                        isConnected: false,
+                        connectionPhase: get().hasEverConnected ? "reconnecting" : "connecting",
+                        lastDisconnectReason: 'health_check_failed',
+                    });
                     return false;
                 },
 
@@ -1896,7 +1974,11 @@ export const useConfigStore = create<ConfigStore>()(
 
                         if (!isConnected) {
                             if (debug) console.log("Server not connected");
-                            set({ isConnected: false });
+                            // checkConnection already set lastDisconnectReason; do not overwrite.
+                            set({
+                                isConnected: false,
+                                connectionPhase: get().hasEverConnected ? "reconnecting" : "connecting",
+                            });
                             return;
                         }
 
@@ -1909,11 +1991,16 @@ export const useConfigStore = create<ConfigStore>()(
                         if (debug) console.log("Loading agents...");
                         await get().loadAgents();
 
-                        set({ isInitialized: true, isConnected: true });
+                        set({ isInitialized: true, isConnected: true, hasEverConnected: true, connectionPhase: "connected" });
                         if (debug) console.log("App initialized successfully");
                     } catch (error) {
                         console.error("Failed to initialize app:", error);
-                        set({ isInitialized: false, isConnected: false });
+                        set({
+                            isInitialized: false,
+                            isConnected: false,
+                            connectionPhase: get().hasEverConnected ? "reconnecting" : "connecting",
+                            lastDisconnectReason: 'init_error',
+                        });
                     }
                 },
 
@@ -1982,7 +2069,9 @@ export const useConfigStore = create<ConfigStore>()(
                     settingsDefaultAgent: state.settingsDefaultAgent,
                     settingsAutoCreateWorktree: state.settingsAutoCreateWorktree,
                     settingsGitmojiEnabled: state.settingsGitmojiEnabled,
+                    settingsDefaultFileViewerPreview: state.settingsDefaultFileViewerPreview,
                     settingsZenModel: state.settingsZenModel,
+                    settingsMessageStreamTransport: state.settingsMessageStreamTransport,
                     speechRate: state.speechRate,
                     speechPitch: state.speechPitch,
                     speechVolume: state.speechVolume,

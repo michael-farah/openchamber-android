@@ -12,11 +12,12 @@ type ScrollableOverlayProps = React.HTMLAttributes<HTMLElement> & {
   disableHorizontal?: boolean;
   observeMutations?: boolean;
   fillContainer?: boolean;
-  keyboardAvoid?: boolean;
   /** Prevent scroll from propagating to parent when at boundaries */
   preventOverscroll?: boolean;
   useScrollShadow?: boolean;
   scrollShadowSize?: number;
+  /** Forwarded to the inner element (e.g. textarea). */
+  disabled?: boolean;
 };
 
 export const ScrollableOverlay = React.forwardRef<HTMLElement, ScrollableOverlayProps>(
@@ -32,7 +33,6 @@ export const ScrollableOverlay = React.forwardRef<HTMLElement, ScrollableOverlay
     disableHorizontal = false,
     observeMutations = true,
     fillContainer = true,
-    keyboardAvoid = false,
     preventOverscroll = false,
     useScrollShadow = false,
     scrollShadowSize,
@@ -49,7 +49,6 @@ export const ScrollableOverlay = React.forwardRef<HTMLElement, ScrollableOverlay
           preventOverscroll && "overscroll-none",
           outerClassName
         )}
-        data-keyboard-avoid={keyboardAvoid ? "true" : undefined}
       >
         {useScrollShadow ? (
           <ScrollShadow

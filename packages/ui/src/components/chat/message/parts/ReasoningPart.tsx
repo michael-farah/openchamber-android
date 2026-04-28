@@ -81,6 +81,7 @@ type ReasoningTimelineBlockProps = {
     time?: { start?: number; end?: number };
     showDuration?: boolean;
     isStreaming?: boolean;
+    actions?: React.ReactNode;
 };
 
 export const ReasoningTimelineBlock: React.FC<ReasoningTimelineBlockProps> = ({
@@ -91,6 +92,7 @@ export const ReasoningTimelineBlock: React.FC<ReasoningTimelineBlockProps> = ({
     time,
     showDuration = true,
     isStreaming = false,
+    actions,
 }) => {
     const [isExpanded, setIsExpanded] = React.useState(false);
 
@@ -104,14 +106,14 @@ export const ReasoningTimelineBlock: React.FC<ReasoningTimelineBlockProps> = ({
             return;
         }
         onContentChange?.('structural');
-    }, [onContentChange, isExpanded, text]);
+    }, [onContentChange, text]);
 
     if (!text || text.trim().length === 0) {
         return null;
     }
 
     return (
-        <div className="my-1" data-reasoning-block-id={blockId}>
+        <div className="my-1" data-reasoning-block-id={blockId} data-message-text-export-root="true">
             <div
                 className={cn(
                     'group/tool flex items-center gap-2 pr-2 pl-px py-1.5 rounded-xl cursor-pointer'
@@ -171,13 +173,22 @@ export const ReasoningTimelineBlock: React.FC<ReasoningTimelineBlockProps> = ({
                         outerClassName="max-h-80"
                         className="p-0"
                     >
-                        <MarkdownRenderer
-                            content={text}
-                            messageId={blockId}
-                            isAnimated={false}
-                            isStreaming={isStreaming}
-                            variant="reasoning"
-                        />
+                        <div data-message-text-export-source="true">
+                            <MarkdownRenderer
+                                content={text}
+                                messageId={blockId}
+                                isAnimated={false}
+                                isStreaming={isStreaming}
+                                variant="reasoning"
+                            />
+                        </div>
+                        {actions ? (
+                            <div className="mt-2 mb-1 flex items-center justify-start gap-1.5" data-message-actions="true">
+                                <div className="flex items-center gap-1.5" data-message-action-group="true">
+                                    {actions}
+                                </div>
+                            </div>
+                        ) : null}
                     </ScrollableOverlay>
                 </div>
             )}
@@ -191,11 +202,11 @@ type ReasoningPartProps = {
     messageId: string;
 };
 
-const ReasoningPart: React.FC<ReasoningPartProps> = ({
+const ReasoningPart = React.memo(({
     part,
     onContentChange,
     messageId,
-}) => {
+}: ReasoningPartProps) => {
     const chatRenderMode = useUIStore((state) => state.chatRenderMode);
     const partWithText = part as PartWithText;
     const rawText = partWithText.text || partWithText.content || '';
@@ -225,7 +236,7 @@ const ReasoningPart: React.FC<ReasoningPartProps> = ({
             isStreaming={isStreaming}
         />
     );
-};
+});
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const formatReasoningText = (text: string): string => cleanReasoningText(text);

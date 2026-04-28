@@ -1,30 +1,46 @@
 import React from 'react';
+import type { Agent } from '@opencode-ai/sdk/v2';
 import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useAgentsStore } from '@/stores/useAgentsStore';
+import { useAgentsStore, filterVisibleAgents } from '@/stores/useAgentsStore';
+import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useDeviceInfo } from '@/lib/device';
 import { RiArrowDownSLine, RiRobot2Line } from '@remixicon/react';
 import { cn } from '@/lib/utils';
 import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
+import { useI18n } from '@/lib/i18n';
 
 interface AgentSelectorProps {
     agentName: string;
     onChange: (agentName: string) => void;
     className?: string;
+    filter?: (agent: Agent) => boolean;
 }
 
 export const AgentSelector: React.FC<AgentSelectorProps> = ({
     agentName,
     onChange,
-    className
+    className,
+    filter,
 }) => {
-    const { loadAgents, getVisibleAgents } = useAgentsStore();
-    const agents = getVisibleAgents();
+    const { t } = useI18n();
+    const configAgents = useConfigStore((state) => state.agents);
+    const agentsStoreAgents = useAgentsStore((state) => state.agents);
+    const loadAgentsStore = useAgentsStore((state) => state.loadAgents);
+    const loadConfigAgents = useConfigStore((state) => state.loadAgents);
+    const rawAgents = React.useMemo(() => {
+        if (Array.isArray(configAgents) && configAgents.length > 0) return configAgents;
+        return Array.isArray(agentsStoreAgents) ? agentsStoreAgents : [];
+    }, [configAgents, agentsStoreAgents]);
+    const agents = React.useMemo(() => {
+        const visible = filterVisibleAgents(rawAgents);
+        return filter ? visible.filter(filter) : visible;
+    }, [rawAgents, filter]);
     const isMobile = useUIStore(state => state.isMobile);
     const { isMobile: deviceIsMobile } = useDeviceInfo();
     const isActuallyMobile = isMobile || deviceIsMobile;
@@ -32,8 +48,10 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
     const [isMobilePanelOpen, setIsMobilePanelOpen] = React.useState(false);
 
     React.useEffect(() => {
-        loadAgents();
-    }, [loadAgents]);
+        if (rawAgents.length > 0) return;
+        void loadConfigAgents();
+        void loadAgentsStore();
+    }, [rawAgents.length, loadConfigAgents, loadAgentsStore]);
 
     const closeMobilePanel = () => setIsMobilePanelOpen(false);
 
@@ -45,11 +63,11 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
         if (!isActuallyMobile) return null;
 
         return (
-            <MobileOverlayPanel
-                open={isMobilePanelOpen}
-                onClose={closeMobilePanel}
-                title="Select agent"
-            >
+                <MobileOverlayPanel
+                    open={isMobilePanelOpen}
+                    onClose={closeMobilePanel}
+                    title={t('settings.commands.agentSelector.title')}
+                >
                 <div className="space-y-1">
                     <button
                         type="button"
@@ -62,7 +80,9 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
                             closeMobilePanel();
                         }}
                     >
-                        <span className={cn('typography-meta', !agentName ? 'font-medium' : 'text-muted-foreground')}>Not selected</span>
+                        <span className={cn('typography-meta', !agentName ? 'font-medium' : 'text-muted-foreground')}>
+                            {t('settings.commands.agentSelector.notSelected')}
+                        </span>
                         {!agentName && <div className="h-2 w-2 rounded-full bg-primary" />}
                     </button>
                     {agents.map((agent) => {
@@ -114,7 +134,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
                     <div className="flex items-center gap-2">
                         <RiRobot2Line className="h-3.5 w-3.5 text-muted-foreground" />
                         <span className="typography-meta font-medium text-foreground">
-                            {agentName || 'Select agent...'}
+                            {agentName || t('settings.commands.agentSelector.selectAgentPlaceholder')}
                         </span>
                     </div>
                     <RiArrowDownSLine className="h-3 w-3 text-muted-foreground" />
@@ -128,7 +148,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
                         )}>
                             <RiRobot2Line className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
                             <span className="typography-micro font-medium whitespace-nowrap">
-                                {agentName || 'Not selected'}
+                                {agentName || t('settings.commands.agentSelector.notSelected')}
                             </span>
                             <RiArrowDownSLine className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
                         </div>
@@ -138,7 +158,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
                             className="typography-meta"
                             onSelect={() => handleAgentChange('')}
                         >
-                            <span className="text-muted-foreground">Not selected</span>
+                            <span className="text-muted-foreground">{t('settings.commands.agentSelector.notSelected')}</span>
                         </DropdownMenuItem>
                         {agents.map((agent) => (
                             <DropdownMenuItem

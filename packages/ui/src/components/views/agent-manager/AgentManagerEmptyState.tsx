@@ -20,11 +20,14 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 import { ModelMultiSelect, generateInstanceId, type ModelSelectionWithId } from '@/components/multirun/ModelMultiSelect';
 import { BranchSelector, useBranchOptions } from '@/components/multirun/BranchSelector';
 import { AgentSelector } from '@/components/multirun/AgentSelector';
+import { CommandAutocomplete, type CommandAutocompleteHandle, type CommandInfo } from '@/components/chat/CommandAutocomplete';
+import { FileMentionAutocomplete, type FileMentionHandle } from '@/components/chat/FileMentionAutocomplete';
 import { isIMECompositionEvent } from '@/lib/ime';
 import { getWorktreeSetupCommands } from '@/lib/openchamberConfig';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import type { ProjectRef } from '@/lib/openchamberConfig';
 import type { CreateMultiRunParams, MultiRunFileAttachment } from '@/types/multirun';
+import { useI18n } from '@/lib/i18n';
 
 /** Max file size in bytes (10MB) */
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -53,6 +56,7 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
   onCreateGroup,
   isCreating = false,
 }) => {
+  const { t } = useI18n();
   const [groupName, setGroupName] = React.useState('');
   const [prompt, setPrompt] = React.useState('');
   const [selectedModels, setSelectedModels] = React.useState<ModelSelectionWithId[]>([]);
@@ -63,9 +67,15 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
   const [setupCommands, setSetupCommands] = React.useState<string[]>([]);
   const [isSetupCommandsOpen, setIsSetupCommandsOpen] = React.useState(false);
   const [isLoadingSetupCommands, setIsLoadingSetupCommands] = React.useState(false);
+  const [showFileMention, setShowFileMention] = React.useState(false);
+  const [mentionQuery, setMentionQuery] = React.useState('');
+  const [showCommandAutocomplete, setShowCommandAutocomplete] = React.useState(false);
+  const [commandQuery, setCommandQuery] = React.useState('');
   
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const mentionRef = React.useRef<FileMentionHandle>(null);
+  const commandRef = React.useRef<CommandAutocompleteHandle>(null);
   
   const { currentTheme } = useThemeSystem();
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory ?? null);
@@ -158,7 +168,7 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (file.size > MAX_FILE_SIZE) {
-        toast.error(`File "${file.name}" is too large (max 10MB)`);
+        toast.error(t('agentManager.empty.toast.fileTooLarge', { fileName: file.name }));
         continue;
       }
 
@@ -182,12 +192,16 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
         attachedCount++;
       } catch (error) {
         console.error('File attach failed', error);
-        toast.error(`Failed to attach "${file.name}"`);
+        toast.error(t('agentManager.empty.toast.failedToAttach', { fileName: file.name }));
       }
     }
 
     if (attachedCount > 0) {
-      toast.success(`Attached ${attachedCount} file${attachedCount > 1 ? 's' : ''}`);
+      toast.success(
+        attachedCount === 1
+          ? t('agentManager.empty.toast.attachedSingle', { count: attachedCount })
+          : t('agentManager.empty.toast.attachedPlural', { count: attachedCount })
+      );
     }
 
     if (fileInputRef.current) {
@@ -198,6 +212,110 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
   const handleRemoveFile = (id: string) => {
     setAttachedFiles((prev) => prev.filter((f) => f.id !== id));
   };
+
+  const updateAutocompleteState = React.useCallback((value: string, cursorPosition: number) => {
+    if (value.startsWith('/')) {
+      const firstSpace = value.indexOf(' ');
+      const firstNewline = value.indexOf('\n');
+      const commandEnd = Math.min(
+        firstSpace === -1 ? value.length : firstSpace,
+        firstNewline === -1 ? value.length : firstNewline,
+      );
+
+      if (cursorPosition <= commandEnd && firstSpace === -1) {
+        setCommandQuery(value.substring(1, commandEnd));
+        setShowCommandAutocomplete(true);
+        setShowFileMention(false);
+        return;
+      }
+    }
+
+    setShowCommandAutocomplete(false);
+
+    const textBeforeCursor = value.substring(0, cursorPosition);
+    const lastAtSymbol = textBeforeCursor.lastIndexOf('@');
+    if (lastAtSymbol !== -1) {
+      const charBefore = lastAtSymbol > 0 ? textBeforeCursor[lastAtSymbol - 1] : null;
+      const textAfterAt = textBeforeCursor.substring(lastAtSymbol + 1);
+      const isWordBoundary = !charBefore || /\s/.test(charBefore);
+      if (isWordBoundary && !textAfterAt.includes(' ') && !textAfterAt.includes('\n')) {
+        setMentionQuery(textAfterAt);
+        setShowFileMention(true);
+      } else {
+        setShowFileMention(false);
+      }
+      return;
+    }
+
+    setShowFileMention(false);
+  }, []);
+
+  const handleAutocompleteFileSelect = React.useCallback((file: { name: string; path: string; relativePath?: string }) => {
+    const cursorPosition = textareaRef.current?.selectionStart ?? prompt.length;
+    const textBeforeCursor = prompt.substring(0, cursorPosition);
+    const lastAtSymbol = textBeforeCursor.lastIndexOf('@');
+    const mentionPath = (file.relativePath && file.relativePath.trim().length > 0)
+      ? file.relativePath.trim()
+      : (file.path || file.name);
+
+    const startIndex = lastAtSymbol !== -1 ? lastAtSymbol : cursorPosition;
+    const nextPrompt = `${prompt.substring(0, startIndex)}@${mentionPath} ${prompt.substring(cursorPosition)}`;
+    const nextCursor = startIndex + mentionPath.length + 2;
+
+    setPrompt(nextPrompt);
+    setShowFileMention(false);
+    setMentionQuery('');
+
+    requestAnimationFrame(() => {
+      const currentTextarea = textareaRef.current;
+      if (currentTextarea) {
+        currentTextarea.selectionStart = nextCursor;
+        currentTextarea.selectionEnd = nextCursor;
+        currentTextarea.focus();
+      }
+      updateAutocompleteState(nextPrompt, nextCursor);
+    });
+  }, [prompt, updateAutocompleteState]);
+
+  const handleAutocompleteAgentSelect = React.useCallback((agentName: string) => {
+    const cursorPosition = textareaRef.current?.selectionStart ?? prompt.length;
+    const textBeforeCursor = prompt.substring(0, cursorPosition);
+    const lastAtSymbol = textBeforeCursor.lastIndexOf('@');
+    const startIndex = lastAtSymbol !== -1 ? lastAtSymbol : cursorPosition;
+    const nextPrompt = `${prompt.substring(0, startIndex)}@${agentName} ${prompt.substring(cursorPosition)}`;
+    const nextCursor = startIndex + agentName.length + 2;
+
+    setPrompt(nextPrompt);
+    setShowFileMention(false);
+    setMentionQuery('');
+
+    requestAnimationFrame(() => {
+      const currentTextarea = textareaRef.current;
+      if (currentTextarea) {
+        currentTextarea.selectionStart = nextCursor;
+        currentTextarea.selectionEnd = nextCursor;
+        currentTextarea.focus();
+      }
+      updateAutocompleteState(nextPrompt, nextCursor);
+    });
+  }, [prompt, updateAutocompleteState]);
+
+  const handleAutocompleteCommandSelect = React.useCallback((command: CommandInfo) => {
+    const nextPrompt = `/${command.name} `;
+    setPrompt(nextPrompt);
+    setShowCommandAutocomplete(false);
+    setCommandQuery('');
+
+    requestAnimationFrame(() => {
+      const currentTextarea = textareaRef.current;
+      if (currentTextarea) {
+        currentTextarea.focus();
+        currentTextarea.selectionStart = currentTextarea.value.length;
+        currentTextarea.selectionEnd = currentTextarea.value.length;
+      }
+      updateAutocompleteState(nextPrompt, nextPrompt.length);
+    });
+  }, [updateAutocompleteState]);
 
   // Use either local submitting state or external isCreating prop
   const isSubmittingOrCreating = isSubmitting || isCreating;
@@ -254,9 +372,13 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
       setSelectedAgent('');
       setAttachedFiles([]);
       setBaseBranch('HEAD');
+      setShowCommandAutocomplete(false);
+      setShowFileMention(false);
+      setCommandQuery('');
+      setMentionQuery('');
     } catch (error) {
       console.error('Failed to create agent group:', error);
-      toast.error('Failed to create agent group');
+      toast.error(t('agentManager.empty.toast.failedToCreateGroup'));
     } finally {
       setIsSubmitting(false);
     }
@@ -265,6 +387,22 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Early return during IME composition
     if (isIMECompositionEvent(e)) return;
+
+    if (showCommandAutocomplete && commandRef.current) {
+      if (e.key === 'Enter' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Escape' || e.key === 'Tab') {
+        e.preventDefault();
+        commandRef.current.handleKeyDown(e.key);
+        return;
+      }
+    }
+
+    if (showFileMention && mentionRef.current) {
+      if (e.key === 'Enter' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Escape' || e.key === 'Tab') {
+        e.preventDefault();
+        mentionRef.current.handleKeyDown(e.key);
+        return;
+      }
+    }
 
     // Enter submits if valid, Shift+Enter adds newline
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -283,17 +421,17 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
         {/* Group Name Input */}
         <div className="space-y-1.5">
           <label htmlFor="group-name" className="typography-ui-label font-medium text-foreground">
-            Group Name
+            {t('agentManager.empty.groupName.label')}
           </label>
           <Input
             id="group-name"
             value={groupName}
             onChange={(e) => setGroupName(e.target.value)}
-            placeholder="e.g. feature-auth, bugfix-login"
+            placeholder={t('agentManager.empty.groupName.placeholder')}
             className="typography-body"
           />
           <p className="typography-micro text-muted-foreground">
-            Used for worktree directory and branch naming
+            {t('agentManager.empty.groupName.description')}
           </p>
         </div>
 
@@ -301,7 +439,7 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
         <div className="space-y-1.5">
           <label className="typography-ui-label font-medium text-foreground flex items-center gap-1.5">
             <RiGitBranchLine className="h-4 w-4 text-muted-foreground" />
-            Base Branch
+            {t('agentManager.empty.baseBranch.label')}
           </label>
           <BranchSelector
             directory={currentDirectory}
@@ -309,7 +447,7 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
             onChange={setBaseBranch}
           />
           <p className="typography-micro text-muted-foreground">
-            Creates new branches from <code className="font-mono text-xs">{baseBranch}</code>
+            {t('agentManager.empty.baseBranch.description', { branch: baseBranch })}
           </p>
         </div>
 
@@ -317,12 +455,15 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
         <Collapsible open={isSetupCommandsOpen} onOpenChange={setIsSetupCommandsOpen}>
           <CollapsibleTrigger className="w-full flex items-center justify-between py-1 hover:bg-[var(--interactive-hover)] rounded-md px-1 -mx-1 transition-colors">
             <p className="typography-ui-label font-medium text-foreground">
-              Setup commands
-              {setupCommands.filter(cmd => cmd.trim()).length > 0 && (
-                <span className="font-normal text-muted-foreground/70">
-                  {' '}({setupCommands.filter(cmd => cmd.trim()).length} configured)
-                </span>
-              )}
+              {t('agentManager.empty.setupCommands.label')}
+              {(() => {
+                const trimmedCommandCount = setupCommands.filter(cmd => cmd.trim()).length;
+                return trimmedCommandCount > 0 ? (
+                  <span className="font-normal text-muted-foreground/70">
+                    {' '}({t('agentManager.empty.setupCommands.configured', { count: trimmedCommandCount })})
+                  </span>
+                ) : null;
+              })()}
             </p>
             <RiArrowDownSLine className={cn(
               'h-4 w-4 text-muted-foreground transition-transform duration-200',
@@ -332,10 +473,10 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
           <CollapsibleContent>
             <div className="pt-2 space-y-2">
               <p className="typography-micro text-muted-foreground/70">
-                Commands run in each new worktree. Use <code className="font-mono text-xs">$ROOT_PROJECT_PATH</code> for project root.
+                {t('agentManager.empty.setupCommands.description')}
               </p>
               {isLoadingSetupCommands ? (
-                <p className="typography-meta text-muted-foreground/70">Loading...</p>
+                <p className="typography-meta text-muted-foreground/70">{t('agentManager.empty.setupCommands.loading')}</p>
               ) : (
                 <div className="space-y-1.5">
                   {setupCommands.map((command, index) => (
@@ -347,7 +488,7 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
                           newCommands[index] = e.target.value;
                           setSetupCommands(newCommands);
                         }}
-                        placeholder="e.g., bun install"
+                        placeholder={t('agentManager.empty.setupCommands.commandPlaceholder')}
                         className="h-8 flex-1 font-mono text-xs"
                       />
                       <button
@@ -357,7 +498,7 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
                           setSetupCommands(newCommands);
                         }}
                         className="flex-shrink-0 flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                        aria-label="Remove command"
+                        aria-label={t('agentManager.empty.setupCommands.removeCommandAria')}
                       >
                         <RiCloseLine className="h-4 w-4" />
                       </button>
@@ -369,7 +510,7 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
                     className="flex items-center gap-1.5 typography-meta text-muted-foreground hover:text-foreground transition-colors"
                   >
                     <RiAddLine className="h-3.5 w-3.5" />
-                    Add command
+                    {t('agentManager.empty.setupCommands.addCommand')}
                   </button>
                 </div>
               )}
@@ -380,21 +521,21 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
         {/* Agent Selection */}
         <div className="space-y-1.5">
           <label className="typography-ui-label font-medium text-foreground">
-            Agent
+            {t('agentManager.empty.agent.label')}
           </label>
           <AgentSelector
             value={selectedAgent}
             onChange={setSelectedAgent}
           />
           <p className="typography-micro text-muted-foreground">
-            Defaults to your configured default agent
+            {t('agentManager.empty.agent.description')}
           </p>
         </div>
 
         {/* Model Selection */}
         <div className="space-y-1.5">
           <label className="typography-ui-label font-medium text-foreground">
-            Models
+            {t('agentManager.empty.models.label')}
           </label>
           <ModelMultiSelect
             selectedModels={selectedModels}
@@ -402,7 +543,7 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
             onRemove={handleRemoveModel}
             onUpdate={handleUpdateModel}
             minModels={1}
-            addButtonLabel="Add model"
+            addButtonLabel={t('agentManager.empty.models.addModel')}
             maxModels={5}
           />
         </div>
@@ -410,22 +551,28 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
         {/* Chat Input Style Prompt */}
         <div className="space-y-1.5">
           <label htmlFor="prompt" className="typography-ui-label font-medium text-foreground">
-            Prompt
+            {t('agentManager.empty.prompt.label')}
           </label>
-          <div
-            className="rounded-xl border border-border/80 overflow-hidden focus-within:ring-1 focus-within:ring-primary/50"
-            style={{ backgroundColor: currentTheme?.colors?.surface?.subtle }}
-          >
-            {/* Text Area */}
-            <Textarea
-              ref={textareaRef}
-              id="prompt"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Ask anything..."
-              className="min-h-[100px] max-h-[300px] resize-none border-0 bg-transparent dark:bg-transparent px-4 py-3 typography-markdown focus-visible:ring-0 focus-visible:ring-offset-0"
-            />
+          <div className="relative">
+            <div
+              className="rounded-xl border border-border/80 overflow-hidden focus-within:ring-1 focus-within:ring-primary/50"
+              style={{ backgroundColor: currentTheme?.colors?.surface?.subtle }}
+            >
+              {/* Text Area */}
+              <Textarea
+                ref={textareaRef}
+                id="prompt"
+                value={prompt}
+                onChange={(event) => {
+                  const nextPrompt = event.target.value;
+                  setPrompt(nextPrompt);
+                  const cursorPosition = event.target.selectionStart ?? nextPrompt.length;
+                  updateAutocompleteState(nextPrompt, cursorPosition);
+                }}
+                onKeyDown={handleKeyDown}
+                placeholder={t('agentManager.empty.prompt.placeholder')}
+                className="min-h-[100px] max-h-[300px] resize-none border-0 bg-transparent dark:bg-transparent px-4 py-3 typography-markdown focus-visible:ring-0 focus-visible:ring-offset-0"
+              />
             
             {/* Attached Files Display */}
             {attachedFiles.length > 0 && (
@@ -455,8 +602,8 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
               </div>
             )}
             
-            {/* Footer Controls */}
-            <div className="flex items-center justify-between px-3 py-2 border-t border-border/40 bg-transparent">
+              {/* Footer Controls */}
+              <div className="flex items-center justify-between px-3 py-2 border-t border-border/40 bg-transparent">
               {/* Left Controls - Attachments */}
               <div className="flex items-center gap-2">
                 <input
@@ -471,7 +618,7 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground transition-colors"
-                  aria-label="Add attachment"
+                  aria-label={t('agentManager.empty.prompt.addAttachmentAria')}
                 >
                   <RiAddCircleLine className="h-[18px] w-[18px]" />
                 </button>
@@ -480,7 +627,9 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
               {/* Right Controls - Model Count */}
               <div className="flex items-center gap-2">
                 <span className="typography-meta text-muted-foreground">
-                  {selectedModels.length} model{selectedModels.length !== 1 ? 's' : ''} selected
+                  {selectedModels.length === 1
+                    ? t('agentManager.empty.models.selectedSingle', { count: selectedModels.length })
+                    : t('agentManager.empty.models.selectedPlural', { count: selectedModels.length })}
                 </span>
               </div>
               {/* Submit Button */}
@@ -493,7 +642,7 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
                           ? 'text-primary hover:text-primary'
                           : 'opacity-30'
                   )}
-                  aria-label="Start Agent Group"
+                  aria-label={t('agentManager.empty.actions.startAgentGroupAria')}
                 >
                   {isSubmittingOrCreating ? (
                     <RiHourglassFill className="h-[18px] w-[18px] animate-spin" />
@@ -501,7 +650,41 @@ export const AgentManagerEmptyState: React.FC<AgentManagerEmptyStateProps> = ({
                     <RiSendPlane2Line className="h-[18px] w-[18px]" />
                   )}
                 </button>
+              </div>
             </div>
+
+            {showCommandAutocomplete ? (
+              <CommandAutocomplete
+                ref={commandRef}
+                searchQuery={commandQuery}
+                onCommandSelect={handleAutocompleteCommandSelect}
+                onClose={() => setShowCommandAutocomplete(false)}
+                style={{
+                  left: 0,
+                  top: 'auto',
+                  bottom: 'calc(100% + 6px)',
+                  marginBottom: 0,
+                  maxWidth: '100%',
+                }}
+              />
+            ) : null}
+
+            {showFileMention ? (
+              <FileMentionAutocomplete
+                ref={mentionRef}
+                searchQuery={mentionQuery}
+                onFileSelect={handleAutocompleteFileSelect}
+                onAgentSelect={handleAutocompleteAgentSelect}
+                onClose={() => setShowFileMention(false)}
+                style={{
+                  left: 0,
+                  top: 'auto',
+                  bottom: 'calc(100% + 6px)',
+                  marginBottom: 0,
+                  maxWidth: '100%',
+                }}
+              />
+            ) : null}
           </div>
         </div>
       </form>

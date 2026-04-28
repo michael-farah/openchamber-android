@@ -18,6 +18,7 @@ export const createSettingsHelpers = (dependencies) => {
   } = dependencies;
 
   const PWA_APP_NAME_MAX_LENGTH = 64;
+  const PWA_ORIENTATION_VALUES = new Set(['system', 'portrait', 'landscape']);
 
   const normalizePwaAppName = (value, fallback = '') => {
     if (typeof value !== 'string') {
@@ -28,6 +29,17 @@ export const createSettingsHelpers = (dependencies) => {
       return fallback;
     }
     return normalized.slice(0, PWA_APP_NAME_MAX_LENGTH);
+  };
+
+  const normalizePwaOrientation = (value, fallback = 'system') => {
+    if (typeof value !== 'string') {
+      return fallback;
+    }
+    const normalized = value.trim();
+    if (PWA_ORIENTATION_VALUES.has(normalized)) {
+      return normalized;
+    }
+    return fallback;
   };
 
   const sanitizeSettingsUpdate = (payload) => {
@@ -84,6 +96,9 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.opencodeBinary === 'string') {
       const normalized = normalizeDirectoryPath(candidate.opencodeBinary).trim();
       result.opencodeBinary = normalized;
+    }
+    if (typeof candidate.desktopLanAccessEnabled === 'boolean') {
+      result.desktopLanAccessEnabled = candidate.desktopLanAccessEnabled;
     }
     if (Array.isArray(candidate.projects)) {
       const projects = sanitizeProjects(candidate.projects);
@@ -274,6 +289,9 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.gitmojiEnabled === 'boolean') {
       result.gitmojiEnabled = candidate.gitmojiEnabled;
     }
+    if (typeof candidate.defaultFileViewerPreview === 'boolean') {
+      result.defaultFileViewerPreview = candidate.defaultFileViewerPreview;
+    }
     if (typeof candidate.zenModel === 'string') {
       const trimmed = candidate.zenModel.trim();
       result.zenModel = trimmed.length > 0 ? trimmed : undefined;
@@ -288,6 +306,9 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (typeof candidate.pwaAppName === 'string') {
       result.pwaAppName = normalizePwaAppName(candidate.pwaAppName, undefined);
+    }
+    if (typeof candidate.pwaOrientation === 'string') {
+      result.pwaOrientation = normalizePwaOrientation(candidate.pwaOrientation, undefined);
     }
     if (typeof candidate.toolCallExpansion === 'string') {
       const mode = candidate.toolCallExpansion.trim();
@@ -307,10 +328,28 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.showExpandedEditTools === 'boolean') {
       result.showExpandedEditTools = candidate.showExpandedEditTools;
     }
+    if (typeof candidate.timeFormatPreference === 'string') {
+      const mode = candidate.timeFormatPreference.trim();
+      if (mode === 'auto' || mode === '12h' || mode === '24h') {
+        result.timeFormatPreference = mode;
+      }
+    }
+    if (typeof candidate.weekStartPreference === 'string') {
+      const mode = candidate.weekStartPreference.trim();
+      if (mode === 'auto' || mode === 'sunday' || mode === 'monday') {
+        result.weekStartPreference = mode;
+      }
+    }
     if (typeof candidate.chatRenderMode === 'string') {
       const mode = candidate.chatRenderMode.trim();
       if (mode === 'sorted' || mode === 'live') {
         result.chatRenderMode = mode;
+      }
+    }
+    if (typeof candidate.messageStreamTransport === 'string') {
+      const mode = candidate.messageStreamTransport.trim();
+      if (mode === 'auto' || mode === 'ws' || mode === 'sse') {
+        result.messageStreamTransport = mode;
       }
     }
     if (typeof candidate.activityRenderMode === 'string') {
@@ -333,6 +372,9 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (typeof candidate.stickyUserHeader === 'boolean') {
       result.stickyUserHeader = candidate.stickyUserHeader;
+    }
+    if (typeof candidate.showSplitAssistantMessageActions === 'boolean') {
+      result.showSplitAssistantMessageActions = candidate.showSplitAssistantMessageActions;
     }
     if (typeof candidate.fontSize === 'number' && Number.isFinite(candidate.fontSize)) {
       result.fontSize = Math.max(50, Math.min(200, Math.round(candidate.fontSize)));
@@ -581,11 +623,13 @@ export const createSettingsHelpers = (dependencies) => {
     const bookmarks = normalizeStringArray(settings.securityScopedBookmarks);
     const hasManagedRemoteTunnelToken = typeof settings?.managedRemoteTunnelToken === 'string' && settings.managedRemoteTunnelToken.trim().length > 0;
     const pwaAppName = normalizePwaAppName(settings?.pwaAppName, '');
+    const pwaOrientation = normalizePwaOrientation(settings?.pwaOrientation, 'system');
 
     return {
       ...sanitized,
       hasManagedRemoteTunnelToken,
       ...(pwaAppName ? { pwaAppName } : {}),
+      pwaOrientation,
       approvedDirectories: approved,
       securityScopedBookmarks: bookmarks,
       pinnedDirectories: normalizeStringArray(settings.pinnedDirectories),
@@ -601,6 +645,7 @@ export const createSettingsHelpers = (dependencies) => {
 
   return {
     normalizePwaAppName,
+    normalizePwaOrientation,
     sanitizeSettingsUpdate,
     mergePersistedSettings,
     formatSettingsResponse,
