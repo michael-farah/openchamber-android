@@ -1,13 +1,13 @@
 {
   "name": "@openchamber/android-twa",
-  "version": "1.0.0",
+  "version": "1.9.9",
   "description": "Android TWA (Trusted Web Activity) builder for OpenChamber PWA",
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "cd configurable-wrapper && ./gradlew assembleRelease",
-    "build:debug": "cd configurable-wrapper && ./gradlew assembleDebug",
-    "build:aab": "cd configurable-wrapper && ./gradlew bundleRelease",
+    "build": "node scripts/guard-android-sdk.mjs",
+    "build:debug": "node scripts/guard-android-sdk.mjs assembleDebug",
+    "build:aab": "node scripts/guard-android-sdk.mjs bundleRelease",
     "init:bw": "node scripts/init-twa.mjs",
     "build:bw": "node scripts/build-with-check.mjs",
     "build:aab:bw": "node scripts/build-with-check.mjs --generateAppBundle",
