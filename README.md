@@ -26,6 +26,16 @@
 <img src="docs/references/pwa_diff_example.png" width="45%" alt="PWA Diff">
 </p>
 
+<!-- ── Android TWA ── -->
+
+#### Android
+
+<p>
+<img src="https://github.com/user-attachments/assets/da55dc0c-74a4-49d9-98d6-fe6818c4969b" width="30%" alt="Android Splash Screen" />
+<img src="https://github.com/user-attachments/assets/522c3d76-662b-4e86-925c-24a2e8e61a16" width="30%" alt="Android Notification Dialog" />
+<img src="https://github.com/user-attachments/assets/f4a29573-7bd0-48cf-929a-e290b489e474" width="30%" alt="Android Notification" />
+</p>
+
 </details>
 
 ## Why use OpenChamber?
@@ -58,6 +68,17 @@
 - Background notifications plus reliable cross-tab session activity tracking
 - Built-in self-update + restart flow that keeps your server settings intact
 
+### Android (TWA)
+
+- Native Android APK wrapping the OpenChamber PWA via [Trusted Web Activity](https://developer.chrome.com/docs/android/trusted-web-activity/)
+- First-run settings screen to enter any OpenChamber instance URL — no rebuild required
+- Saved server history with autocomplete for quick switching
+- Branded splash screen and native notification support with badges
+- TWA launch with automatic WebView fallback
+- Digital Asset Links (`assetlinks.json`) support for verified link handling
+- Workbox service worker caching for offline-ready UI
+- Cleartext traffic permitted by default for self-hosted LAN/VPN instances
+
 ### Desktop (macOS)
 
 - Native macOS menu integration with polished app actions and deep-link handling
@@ -88,6 +109,12 @@
 
 ### **Desktop (macOS)**
 Download from [Releases](https://github.com/btriapitsyn/openchamber/releases).
+
+### **Android**
+
+Download the APK from [Releases](https://github.com/michael-farah/openchamber-android/releases). Requires Android 7.0+.
+
+On first launch, enter your OpenChamber instance URL — the app saves it locally so you only do this once. No build-time configuration needed.
 
 ### **VS Code**
 Install from [Marketplace](https://marketplace.visualstudio.com/items?itemName=fedaykindev.openchamber) or search "OpenChamber" in Extensions.
@@ -313,6 +340,20 @@ chown -R 1000:1000 data/
 - Background notifications and cross-tab session tracking
 - Self-update + restart flow that keeps your server settings intact
 - Installable as PWA with project-aware naming
+
+</details>
+
+<details>
+<summary><strong>Android (TWA)</strong></summary>
+
+- Native APK via Trusted Web Activity — no browser chrome, full-screen experience
+- Configurable server URL on first launch with saved history and autocomplete
+- TWA with automatic WebView fallback when Chrome isn't available
+- Native Android notifications with badge support
+- Branded splash screen
+- Digital Asset Links for verified link handling
+- Workbox service worker caching gated behind TWA context for offline-ready UI
+- Cleartext traffic permitted for self-hosted LAN/VPN instances
 
 </details>
 
