@@ -125,11 +125,17 @@ jobs:
       - name: Build APK
         run: bun run android:build
 
+
+      - name: Rename APK to include version
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          mv "packages/android-twa/configurable-wrapper/app/build/outputs/apk/release/app-release.apk" \
+            "packages/android-twa/configurable-wrapper/app/build/outputs/apk/release/openchamber-${VERSION}.apk"
       - name: Upload APK to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.create-release.outputs.version }}
-          files: packages/android-twa/configurable-wrapper/app/build/outputs/apk/release/app-release.apk
+          files: packages/android-twa/configurable-wrapper/app/build/outputs/apk/release/openchamber-${{ needs.create-release.outputs.version }}.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   build-desktop-macos:
