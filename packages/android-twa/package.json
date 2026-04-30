@@ -1,6 +1,6 @@
 {
   "name": "@openchamber/android-twa",
-  "version": "1.9.9",
+  "version": "1.9.10",
   "description": "Android TWA (Trusted Web Activity) builder for OpenChamber PWA",
   "type": "module",
   "private": true,
