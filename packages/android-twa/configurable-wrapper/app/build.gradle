@@ -16,8 +16,8 @@ android {
         applicationId "ai.opencode.openchamber.configurable"
         minSdk 24
  targetSdk 36
-        versionCode 10909
-        versionName "1.9.9"
+        versionCode 10910
+        versionName "1.9.10"
 
         manifestPlaceholders = [
                 hostName       : localProperties.getProperty('twa.hostName', ''),
