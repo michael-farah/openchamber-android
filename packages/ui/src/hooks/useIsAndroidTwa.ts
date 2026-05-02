@@ -77,11 +77,32 @@ export const useIsAndroidTwa = (): boolean => {
     }
     };
 
-    window.addEventListener('notificationbridgeinstalled', handleBridgeInstalled);
-    return () => {
-      window.removeEventListener('notificationbridgeinstalled', handleBridgeInstalled);
-    };
-  }, []);
+ window.addEventListener('notificationbridgeinstalled', handleBridgeInstalled);
 
+ // Handle navigation messages from the service worker (notificationclick).
+ // When the user taps a push notification, the SW focuses the existing
+ // window client and sends NAVIGATE so we navigate in-place instead of
+ // opening a new tab (which breaks TWA).
+ const handleSwMessage = (event: MessageEvent) => {
+ if (event.data?.type === 'NAVIGATE' && typeof event.data.url === 'string') {
+ const target = event.data.url;
+ // Only navigate if we're not already on that path
+ if (window.location.pathname + window.location.search !== target) {
+ window.location.href = target;
+ }
+ }
+ };
+
+ if ('serviceWorker' in navigator) {
+ navigator.serviceWorker.addEventListener('message', handleSwMessage);
+ }
+
+ return () => {
+ window.removeEventListener('notificationbridgeinstalled', handleBridgeInstalled);
+ if ('serviceWorker' in navigator) {
+ navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+ }
+ };
+ }, []);
   return isAndroidTwa;
 };

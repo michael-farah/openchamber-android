@@ -63,7 +63,10 @@ public class MainActivity extends AppCompatActivity {
 
     private String pendingNotificationCallbackId;
     private static final String NOTIFICATION_JS_OBJECT = "AndroidNotificationBridge";
-    private static final String PREFS_NOTIFICATION_ASKED = "notification_permission_asked";
+ private static final String PREFS_NOTIFICATION_ASKED = "notification_permission_asked";
+ private static final String CHANNEL_ID_DEFAULT = "openchamber_channel";
+ private static final String CHANNEL_ID_URGENT = "openchamber_urgent";
+ private static final String NOTIFICATION_ICON = "ic_notification";
 
     private CustomTabsSession customTabsSession;
     private CustomTabsServiceConnection customTabsServiceConnection;
@@ -84,8 +87,8 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         rootView = findViewById(android.R.id.content);
 
-        webView = findViewById(R.id.webview);
-
+ webView = findViewById(R.id.webview);
+ createNotificationChannels();
         ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
         NetworkCapabilities nc =
                 cm != null ? cm.getNetworkCapabilities(cm.getActiveNetwork()) : null;
@@ -524,6 +527,51 @@ public class MainActivity extends AppCompatActivity {
                 savedInstanceState.getString("pendingNotificationCallbackId");
     }
 
+ @Override
+ protected void onNewIntent(Intent intent) {
+ super.onNewIntent(intent);
+ setIntent(intent);
+ // If the WebView is active, navigate to the session from the notification.
+ // For TWA mode, the Chrome Custom Tab handles deep links through the
+ // intent data URI.
+ if (webView != null && webView.getVisibility() == View.VISIBLE) {
+ String url = getSavedUrl();
+ if (url != null) {
+ String sessionParam = intent.getStringExtra("sessionUrl");
+ if (sessionParam != null && !sessionParam.isEmpty()) {
+ String fullUrl = url.replaceAll("/$", "") + sessionParam;
+ webView.loadUrl(fullUrl);
+ }
+ }
+ }
+ }
+
+ private void createNotificationChannels() {
+ if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+ android.app.NotificationManager nm =
+ (android.app.NotificationManager) getSystemService(android.content.Context.NOTIFICATION_SERVICE);
+
+ // Default channel for informational notifications
+ android.app.NotificationChannel defaultChannel =
+ new android.app.NotificationChannel(
+ CHANNEL_ID_DEFAULT,
+ "Notifications",
+ android.app.NotificationManager.IMPORTANCE_DEFAULT);
+ defaultChannel.setDescription("General OpenChamber notifications");
+ nm.createNotificationChannel(defaultChannel);
+
+ // High-importance channel for agent completions, questions, permissions
+ android.app.NotificationChannel urgentChannel =
+ new android.app.NotificationChannel(
+ CHANNEL_ID_URGENT,
+ "Agent Alerts",
+ android.app.NotificationManager.IMPORTANCE_HIGH);
+ urgentChannel.setDescription("Urgent notifications when your agent needs attention");
+ urgentChannel.enableLights(true);
+ urgentChannel.setLightColor(Color.parseColor("#66800B"));
+ urgentChannel.enableVibration(true);
+ nm.createNotificationChannel(urgentChannel);
+ }
     public class NotificationBridge {
         @JavascriptInterface
         public String getPermission() {
@@ -541,44 +589,55 @@ public class MainActivity extends AppCompatActivity {
         }
 
         @JavascriptInterface
-        public void showNotification(String title, String body) {
-            if (Build.VERSION.SDK_INT >= 33
-                    && ContextCompat.checkSelfPermission(
-                                    MainActivity.this, Manifest.permission.POST_NOTIFICATIONS)
-                            != PackageManager.PERMISSION_GRANTED) {
-                return;
-            }
-            android.app.NotificationManager notificationManager =
-                    (android.app.NotificationManager)
-                            getSystemService(android.content.Context.NOTIFICATION_SERVICE);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                android.app.NotificationChannel channel =
-                        new android.app.NotificationChannel(
-                                "openchamber_channel",
-                                "OpenChamber Notifications",
-                                android.app.NotificationManager.IMPORTANCE_DEFAULT);
-                notificationManager.createNotificationChannel(channel);
-            }
-            android.app.Notification.Builder builder;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                builder =
-                        new android.app.Notification.Builder(
-                                MainActivity.this, "openchamber_channel");
-            } else {
-                builder = new android.app.Notification.Builder(MainActivity.this);
-            }
-            Intent intent = new Intent(MainActivity.this, MainActivity.class);
-            intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            android.app.PendingIntent pendingIntent =
-                    android.app.PendingIntent.getActivity(
-                            MainActivity.this, 0, intent, android.app.PendingIntent.FLAG_IMMUTABLE);
-            builder.setContentIntent(pendingIntent);
-            builder.setSmallIcon(android.R.drawable.ic_dialog_info)
-                    .setContentTitle(title)
-                    .setContentText(body)
-                    .setAutoCancel(true);
-            notificationManager.notify((int) System.currentTimeMillis(), builder.build());
-        }
+ public String showNotification(String title, String body, String sessionUrl) {
+ if (Build.VERSION.SDK_INT >= 33
+ && ContextCompat.checkSelfPermission(
+ MainActivity.this, Manifest.permission.POST_NOTIFICATIONS)
+ != PackageManager.PERMISSION_GRANTED) {
+ return "denied";
+ }
+ android.app.NotificationManager notificationManager =
+ (android.app.NotificationManager)
+ getSystemService(android.content.Context.NOTIFICATION_SERVICE);
+
+ String channelId = CHANNEL_ID_URGENT;
+
+ android.app.Notification.Builder builder;
+ if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+ builder = new android.app.Notification.Builder(
+ MainActivity.this, channelId);
+ } else {
+ builder = new android.app.Notification.Builder(MainActivity.this);
+ }
+
+ // Deep link: open the app and navigate to the session if available
+ Intent intent = new Intent(MainActivity.this, MainActivity.class);
+ intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+ if (sessionUrl != null && !sessionUrl.isEmpty()) {
+ intent.putExtra("sessionUrl", sessionUrl);
+ }
+
+ android.app.PendingIntent pendingIntent =
+ android.app.PendingIntent.getActivity(
+ MainActivity.this,
+ (int) System.currentTimeMillis(),
+ intent,
+ android.app.PendingIntent.FLAG_IMMUTABLE | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
+
+ builder.setContentIntent(pendingIntent);
+
+ // Use the custom notification icon, fall back to system icon if not found
+ int iconResId = getResources().getIdentifier(
+ NOTIFICATION_ICON, "drawable", getPackageName());
+ int smallIcon = iconResId != 0 ? iconResId : android.R.drawable.ic_dialog_info;
+ builder.setSmallIcon(smallIcon)
+ .setContentTitle(title)
+ .setContentText(body)
+ .setAutoCancel(true);
+
+ notificationManager.notify((int) System.currentTimeMillis(), builder.build());
+ return "shown";
+ }
 
         @JavascriptInterface
         public void requestPermission(String callbackId) {
@@ -648,26 +707,29 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private String getNotificationBridgeJs() {
-        return "(function() {"
-                + "  if (window._notificationBridgeInstalled) return;"
-                + "  window._notificationBridgeInstalled = true;"
-                + "  var bridge = "
-                + NOTIFICATION_JS_OBJECT
-                + ";  var ShimNotification = function(title, options) {    var body = options ?"
-                + " options.body : ''; bridge.showNotification(title, body);  }; "
-                + " Object.defineProperty(ShimNotification, 'permission', {    get: function() {"
-                + " return bridge.getPermission(); },    configurable: true  }); "
-                + " ShimNotification.requestPermission = function() {    return new"
-                + " Promise(function(resolve) {      var perm = bridge.getPermission();      if"
-                + " (perm === 'granted') { resolve('granted'); return; }      var cbId = 'cb_' +"
-                + " Date.now() + '_' + Math.random().toString(36).substr(2,9);     "
-                + " window._notifCbs = window._notifCbs || {};      window._notifCbs[cbId] ="
-                + " resolve;      bridge.requestPermission(cbId);    });  }; "
-                + " ShimNotification._onResult = function(cbId, result) {    if (window._notifCbs"
-                + " && window._notifCbs[cbId]) {      window._notifCbs[cbId](result);      delete"
-                + " window._notifCbs[cbId];    }  };  Object.defineProperty(window, 'Notification',"
-                + " {    value: ShimNotification,    writable: true,    configurable: true  }); "
-                + " window.dispatchEvent(new Event('notificationbridgeinstalled'));})();";
-    }
+ private String getNotificationBridgeJs() {
+ return "(function() {"
+ + " if (window._notificationBridgeInstalled) return;"
+ + " window._notificationBridgeInstalled = true;"
+ + " var bridge = "
+ + NOTIFICATION_JS_OBJECT
+ + "; var ShimNotification = function(title, options) { var body = options ?"
+ + " options.body : ''; var sessionUrl = (options && options.data && options.data.url)"
+ + " ? options.data.url : ''; var result = bridge.showNotification(title, body, sessionUrl);"
+ + " if (result === 'denied' && options && typeof options.onerror === 'function')"
+ + " { options.onerror(new Error('Notification permission denied')); } }; "
+ + " Object.defineProperty(ShimNotification, 'permission', { get: function() {"
+ + " return bridge.getPermission(); }, configurable: true }); "
+ + " ShimNotification.requestPermission = function() { return new"
+ + " Promise(function(resolve) { var perm = bridge.getPermission(); if"
+ + " (perm === 'granted') { resolve('granted'); return; } var cbId = 'cb_' +"
+ + " Date.now() + '_' + Math.random().toString(36).substr(2,9); "
+ + " window._notifCbs = window._notifCbs || {}; window._notifCbs[cbId] ="
+ + " resolve; bridge.requestPermission(cbId); }); }; "
+ + " ShimNotification._onResult = function(cbId, result) { if (window._notifCbs"
+ + " && window._notifCbs[cbId]) { window._notifCbs[cbId](result); delete"
+ + " window._notifCbs[cbId]; } }; Object.defineProperty(window, 'Notification',"
+ + " { value: ShimNotification, writable: true, configurable: true }); "
+ + " window.dispatchEvent(new Event('notificationbridgeinstalled'));})();";
+}
 }

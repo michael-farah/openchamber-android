@@ -97,12 +97,32 @@ self.addEventListener('push', (event) => {
 });
 
 self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
+ event.notification.close();
 
-  const data = (event.notification.data ?? null) as { url?: string } | null;
-  const url = data?.url ?? '/';
+ const data = (event.notification.data ?? null) as { url?: string } | null;
+ const url = data?.url ?? '/';
 
-  event.waitUntil(self.clients.openWindow(url));
+ event.waitUntil(
+ (async () => {
+ // Focus an existing window client (e.g. TWA/Chrome Custom Tab)
+ // instead of opening a new tab, which breaks TWA notification clicks.
+ const clientList = await self.clients.matchAll({
+ type: 'window',
+ includeUncontrolled: true,
+ });
+ for (const client of clientList) {
+ if (
+ client.url.includes(self.location.origin) &&
+ 'focus' in client
+ ) {
+ client.postMessage({ type: 'NAVIGATE', url });
+ return (client as WindowClient).focus();
+ }
+ }
+ // No existing window — open a new one
+ return self.clients.openWindow(url);
+ })(),
+ );
 });
 
 // ---------------------------------------------------------------------------
