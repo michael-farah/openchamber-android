@@ -88,8 +88,11 @@ public class MainActivity extends AppCompatActivity {
         rootView = findViewById(android.R.id.content);
 
  webView = findViewById(R.id.webview);
- createNotificationChannels();
-        ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+  createNotificationChannels();
+  // Request POST_NOTIFICATIONS before launching TWA so that
+  // the web-side Notification.requestPermission() can succeed.
+  requestPostNotificationsPermission();
+  ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
         NetworkCapabilities nc =
                 cm != null ? cm.getNetworkCapabilities(cm.getActiveNetwork()) : null;
         if (nc != null && nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
@@ -469,9 +472,16 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 webPermissionRequest.deny();
             }
-            webPermissionRequest = null;
-        }
-    }
+    webPermissionRequest = null;
+  } else if (requestCode == 400) {
+    // POST_NOTIFICATIONS requested at TWA launch time.
+    // Mark as asked so we don't pester on every launch.
+    SharedPreferences.Editor editor =
+        getSharedPreferences(App.PREFS_NAME, MODE_PRIVATE).edit();
+    editor.putBoolean(PREFS_NOTIFICATION_ASKED, true);
+    editor.apply();
+  }
+}
 
     @Override
     protected void onResume() {
@@ -570,8 +580,25 @@ public class MainActivity extends AppCompatActivity {
  urgentChannel.enableLights(true);
  urgentChannel.setLightColor(Color.parseColor("#66800B"));
  urgentChannel.enableVibration(true);
- nm.createNotificationChannel(urgentChannel);
- }
+    nm.createNotificationChannel(urgentChannel);
+  }
+
+  /**
+   * Request POST_NOTIFICATIONS runtime permission (Android 13+).
+   * This must be granted BEFORE the TWA launches so that the
+   * web-side Notification.requestPermission() can succeed.
+   * On API < 33, notifications are enabled by default.
+   */
+  private void requestPostNotificationsPermission() {
+    if (Build.VERSION.SDK_INT < 33) return;
+    if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+        == PackageManager.PERMISSION_GRANTED) return;
+    // Check if we've already asked (don't pester on every launch)
+    SharedPreferences prefs = getSharedPreferences(App.PREFS_NAME, MODE_PRIVATE);
+    if (prefs.getBoolean(PREFS_NOTIFICATION_ASKED, false)) return;
+    ActivityCompat.requestPermissions(this,
+        new String[]{Manifest.permission.POST_NOTIFICATIONS}, 400);
+  }
     public class NotificationBridge {
         @JavascriptInterface
         public String getPermission() {

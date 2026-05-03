@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
+import { useIsAndroidTwa } from '@/hooks/useIsAndroidTwa';
 
 const DEFAULT_NOTIFICATION_TEMPLATES = {
   completion: {
@@ -55,6 +56,7 @@ export const NotificationSettings: React.FC = () => {
   const isDesktop = React.useMemo(() => isDesktopShell(), []);
   const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
   const isBrowser = !isDesktop && !isVSCode;
+  const isAndroidTwa = useIsAndroidTwa();
   const nativeNotificationsEnabled = useUIStore(state => state.nativeNotificationsEnabled);
   const setNativeNotificationsEnabled = useUIStore(state => state.setNativeNotificationsEnabled);
   const notificationMode = useUIStore(state => state.notificationMode);
@@ -998,8 +1000,34 @@ export const NotificationSettings: React.FC = () => {
                     <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-busy-pulse" aria-label={t('settings.notifications.page.push.loadingAria')} />
                   </div>
                 )}
-              </div>
-            </section>
+      </div>
+      </section>
+
+      {/* TWA-specific permission hint */}
+      {isAndroidTwa && notificationPermission === 'denied' && pushSupported && !pushSubscribed && (
+        <div className="px-2 pb-1">
+          <p className="typography-meta text-[var(--status-error)]">
+            {t('settings.notifications.page.push.twaPermissionDenied')}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={() => {
+              // Try to open Android notification settings via the bridge (WebView fallback)
+              // or direct the user to system settings (TWA Chrome Custom Tab)
+              if (typeof window.AndroidNotificationBridge?.openNotificationSettings === 'function') {
+                window.AndroidNotificationBridge.openNotificationSettings();
+              } else {
+                toast.info(t('settings.notifications.page.push.twaOpenSettingsHint'));
+              }
+            }}
+          >
+            {t('settings.notifications.page.push.openAndroidSettings')}
+          </Button>
+        </div>
+      )}
           </div>
         )}
 

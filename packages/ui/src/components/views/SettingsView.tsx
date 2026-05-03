@@ -170,7 +170,7 @@ export function getSettingsNavIcon(slug: SettingsPageSlug): React.ComponentType<
 const SettingsHome: React.FC<{ onOpen: (slug: SettingsPageSlug) => void }> = ({ onOpen }) => {
   const { t } = useI18n();
   return (
-    <div className="h-full overflow-auto">
+  <div className="h-full overflow-y-auto overflow-x-hidden">
       <div className="mx-auto w-full max-w-3xl px-6 py-6 space-y-6">
         <div className="space-y-1">
           <h1 className="typography-ui-header font-semibold text-foreground">{t('settings.view.home.title')}</h1>
@@ -670,7 +670,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
           <div className={cn('w-[264px] min-w-[264px] border-r', runtimeCtx.isVSCode ? 'bg-background' : 'bg-sidebar')} style={{ borderColor: 'var(--interactive-border)' }}>
             <ErrorBoundary>{renderPageSidebar(settingsSlug, {})}</ErrorBoundary>
           </div>
-          <div className="flex-1 overflow-auto scrollbar-none bg-background">
+    <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-none bg-background">
             <div className="mx-auto h-full w-full max-w-3xl">
               <ErrorBoundary>{renderPageContent(settingsSlug)}</ErrorBoundary>
             </div>
@@ -680,7 +680,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     }
 
     return (
-      <div className="h-full overflow-auto scrollbar-none bg-background">
+    <div className="h-full overflow-y-auto overflow-x-hidden scrollbar-none bg-background">
         <div className="mx-auto h-full w-full max-w-3xl">
           <ErrorBoundary>{renderPageContent(settingsSlug)}</ErrorBoundary>
         </div>
