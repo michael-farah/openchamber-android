@@ -1256,6 +1256,7 @@ export const settingsDict = {
   "settings.notifications.page.push.twaPermissionDenied": "Permiso de notificación denegado. En Android, habilita las notificaciones en Configuración → Aplicaciones → OpenChamber → Notificaciones.",
   "settings.notifications.page.push.openAndroidSettings": "Abrir configuración de notificaciones",
   "settings.notifications.page.push.twaOpenSettingsHint": "Abre Configuración → Aplicaciones → OpenChamber → Notificaciones para habilitar las notificaciones.",
+  "settings.notifications.page.push.twaPermissionDeniedCct": "Las notificaciones están bloqueadas. Habilítalas en la configuración de notificaciones de tu navegador o Android.",
   "settings.notifications.page.toast.permissionDenied.title": "Permiso para notificaciones denegado",
   "settings.notifications.page.toast.permissionDenied.description": "Por favor, habilita las notificaciones en la configuración de tu navegador.",
   "settings.notifications.page.toast.permissionDenied.enableInBrowser": "Habilita las notificaciones en la configuración de tu navegador.",

@@ -1256,6 +1256,7 @@ export const settingsDict = {
   'settings.notifications.page.push.twaPermissionDenied': '通知权限被拒绝。在 Android 上，前往设置 → 应用 → OpenChamber → 通知中启用通知。',
   'settings.notifications.page.push.openAndroidSettings': '打开通知设置',
   'settings.notifications.page.push.twaOpenSettingsHint': '前往设备设置 → 应用 → OpenChamber → 通知以启用通知。',
+  'settings.notifications.page.push.twaPermissionDeniedCct': '通知已被阻止。请在浏览器或 Android 通知设置中启用通知。',
   'settings.notifications.page.toast.permissionDenied.title': '通知权限被拒绝',
   'settings.notifications.page.toast.permissionDenied.description': '请在浏览器设置中启用通知。',
   'settings.notifications.page.toast.permissionDenied.enableInBrowser': '请在浏览器设置中启用通知。',

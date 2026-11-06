@@ -88,9 +88,16 @@ export function getDeviceInfo(): DeviceInfo {
   const isTabletWidth = width > BREAKPOINTS.md && width <= BREAKPOINTS.lg;
   const isMobileWidth = width <= BREAKPOINTS.md;
 
-  let isMobile = hasTouchInput && isMobileWidth;
-  let isTablet = hasTouchInput && !isMobile && isTabletWidth;
-  let isDesktop = !hasTouchInput || width > BREAKPOINTS.lg;
+  // Phone UA detection: a TWA/WebView viewport can report a wide layout width
+  // on first paint, so width alone is not enough to pick the mobile shell.
+  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  const isPhoneUA = /iPhone|iPod|Windows Phone/i.test(userAgent)
+    || /Android.*Mobile/i.test(userAgent)
+    || /\bMobi\b/i.test(userAgent);
+
+  let isMobile = isMobileWidth || isPhoneUA;
+  let isTablet = !isMobile && isTabletWidth;
+  let isDesktop = !isMobile && !isTablet;
   let deviceType: DeviceType = 'desktop';
 
   if (isDesktopShellRuntime) {

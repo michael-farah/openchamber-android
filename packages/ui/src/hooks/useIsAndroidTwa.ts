@@ -23,6 +23,18 @@ function checkBridge(): boolean {
 }
 
 /**
+ * Check whether the AndroidNotificationBridge provides the
+ * `openNotificationSettings` method. This is present in WebView
+ * fallback mode but NOT in Chrome Custom Tab (CCT) mode.
+ * Use this to decide whether to show the native settings button
+ * or text-only guidance.
+ */
+export function hasAndroidNotificationBridge(): boolean {
+  if (typeof window === 'undefined') return false;
+  return typeof window.AndroidNotificationBridge?.openNotificationSettings === 'function';
+}
+
+/**
  * Detect TWA/standalone mode via CSS display-mode media query.
  * Returns true when running in standalone/fullscreen/minimal-ui
  * AND the user-agent indicates Android.
@@ -47,15 +59,20 @@ function checkDisplayModeStandalone(): boolean {
  * need Workbox caching routes — they cause layout regressions
  * on mobile viewports.
  */
-function notifyServiceWorkerTwaContext(): void {
+export async function notifyServiceWorkerTwaContext(): Promise<void> {
   // Only send TWA_CONTEXT when bridge exists (WebView fallback).
   // DO NOT send for display-mode-detected TWA (Chrome Custom Tab).
   if (!checkBridge()) return;
   if (typeof navigator === 'undefined') return;
   if (!('serviceWorker' in navigator)) return;
-  const controller = navigator.serviceWorker.controller;
-  if (controller) {
-    controller.postMessage({ type: 'TWA_CONTEXT' });
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const active = registration.active;
+    if (active) {
+      active.postMessage({ type: 'TWA_CONTEXT' });
+    }
+  } catch {
+    // SW registration may fail or be unsupported — fail silently.
   }
 }
 
@@ -83,6 +100,13 @@ function detectIsAndroidTwa(): boolean {
  * 3. Persist result in localStorage (bridge-only, to avoid stale TWA
  *    flags leaking into regular Chrome sessions via shared origin).
  * 4. Listen for bridge installation events and display-mode changes.
+ *
+ * ⚠️ IMPORTANT: `isAndroidTwa` is a CONTEXT signal, NOT a CAPABILITY flag.
+ * Display-mode detection can produce false positives — an Android PWA
+ * installed from Chrome also matches `display-mode: standalone` + Android UA.
+ * Use bridge presence (e.g. `hasAndroidNotificationBridge()`) to determine
+ * whether native bridge methods are available. Do NOT assume that
+ * `isAndroidTwa === true` means the AndroidNotificationBridge exists.
  */
 export const useIsAndroidTwa = (): boolean => {
   const [isAndroidTwa, setIsAndroidTwa] = React.useState(() => {
@@ -90,7 +114,7 @@ export const useIsAndroidTwa = (): boolean => {
     // Bridge present → WebView fallback (full TWA context + SW routes)
     if (checkBridge()) {
       localStorage.setItem(STORAGE_KEY, 'true');
-      notifyServiceWorkerTwaContext();
+      void notifyServiceWorkerTwaContext();
       return true;
     }
     // Display-mode standalone + Android → TWA Chrome Custom Tab
@@ -111,7 +135,7 @@ export const useIsAndroidTwa = (): boolean => {
 
       if (checkBridge()) {
         localStorage.setItem(STORAGE_KEY, 'true');
-        notifyServiceWorkerTwaContext();
+        void notifyServiceWorkerTwaContext();
       } else if (!detected) {
         localStorage.removeItem(STORAGE_KEY);
       }
@@ -148,6 +172,9 @@ export const useIsAndroidTwa = (): boolean => {
     const handleSwMessage = (event: MessageEvent) => {
       if (event.data?.type === 'NAVIGATE' && typeof event.data.url === 'string') {
         const target = event.data.url;
+        // Client-side validation: only accept same-origin relative paths.
+        // The SW already sanitizes, but defense-in-depth.
+        if (!target.startsWith('/') || target.startsWith('//')) return;
         // Only navigate if we're not already on that path
         if (window.location.pathname + window.location.search !== target) {
           window.location.href = target;

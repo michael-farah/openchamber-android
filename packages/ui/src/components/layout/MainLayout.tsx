@@ -85,6 +85,19 @@ export const MainLayout: React.FC = () => {
 
     const { isMobile } = useDeviceInfo();
     const isDesktopShellRuntime = React.useMemo(() => isDesktopShell(), []);
+    const [layoutReady, setLayoutReady] = React.useState(false);
+    React.useEffect(() => {
+        let raf2: number | undefined;
+        const raf1 = requestAnimationFrame(() => {
+            raf2 = requestAnimationFrame(() => {
+                setLayoutReady(true);
+            });
+        });
+        return () => {
+            cancelAnimationFrame(raf1);
+            if (raf2 !== undefined) cancelAnimationFrame(raf2);
+        };
+    }, []);
     const sidebarWidth = useUIStore((state) => state.sidebarWidth);
     const rightSidebarWidth = useUIStore((state) => state.rightSidebarWidth);
     const [desktopRightSidebarActionsHost, setDesktopRightSidebarActionsHost] = React.useState<HTMLDivElement | null>(null);
@@ -109,7 +122,11 @@ export const MainLayout: React.FC = () => {
     const mobileRightDrawerOpenRef = React.useRef(false);
 
     // Left drawer motion value
-    const leftDrawerX = useMotionValue(0);
+    const leftDrawerX = useMotionValue(
+        typeof window !== 'undefined'
+            ? -(window.innerWidth * MOBILE_DRAWER_WIDTH_PERCENT / 100)
+            : 0
+    );
     const leftDrawerWidth = useRef(0);
 
     // Right drawer motion value
@@ -444,7 +461,7 @@ export const MainLayout: React.FC = () => {
                             opacity: mobileLeftDrawerOpen || isRightSidebarOpen ? 1 : 0,
                             pointerEvents: mobileLeftDrawerOpen || isRightSidebarOpen ? 'auto' : 'none',
                         }}
-                        className="fixed left-0 right-0 bottom-0 top-[var(--oc-header-height,56px)] z-40 bg-black/50 cursor-default"
+                        className="fixed left-0 right-0 bottom-0 top-[var(--oc-header-height,56px)] z-40 bg-black/50 cursor-default md:hidden"
                         onClick={() => {
                             setMobileLeftDrawerOpen(false);
                             setRightSidebarOpen(false);
@@ -454,6 +471,7 @@ export const MainLayout: React.FC = () => {
                     
                     {/* Left drawer (Session) */}
                     <motion.aside
+                        initial={false}
                         drag="x"
                         dragElastic={0.08}
                         dragMomentum={false}
@@ -461,6 +479,7 @@ export const MainLayout: React.FC = () => {
                         style={{
                             width: `${MOBILE_DRAWER_WIDTH_PERCENT}%`,
                             x: leftDrawerX,
+                            visibility: layoutReady ? 'visible' : 'hidden',
                         }}
                         onDragEnd={(_, info) => {
                             const drawerWidthPx = leftDrawerWidth.current || window.innerWidth * 0.85;
@@ -487,7 +506,8 @@ export const MainLayout: React.FC = () => {
                         }}
                         className={cn(
                             'fixed left-0 top-[var(--oc-header-height,56px)] z-50 h-[calc(100%-var(--oc-header-height,56px))] bg-background',
-                            'cursor-grab active:cursor-grabbing'
+                            'cursor-grab active:cursor-grabbing',
+                            'md:hidden'
                         )}
                         aria-hidden={!mobileLeftDrawerOpen}
                     >
@@ -498,7 +518,7 @@ export const MainLayout: React.FC = () => {
                         >
                             <div className="flex-1 min-w-0 overflow-hidden flex flex-col" data-page-scroll-lock="true">
                                 <ErrorBoundary>
-                                    <SessionSidebar mobileVariant />
+                                    {layoutReady ? <SessionSidebar mobileVariant /> : null}
                                 </ErrorBoundary>
                             </div>
                         </div>
@@ -539,7 +559,8 @@ export const MainLayout: React.FC = () => {
                         }}
                         className={cn(
                             'fixed right-0 top-[var(--oc-header-height,56px)] z-50 h-[calc(100%-var(--oc-header-height,56px))] bg-background',
-                            'cursor-grab active:cursor-grabbing'
+                            'cursor-grab active:cursor-grabbing',
+                            'md:hidden'
                         )}
                         aria-hidden={!isRightSidebarOpen}
                     >
@@ -667,13 +688,15 @@ export const MainLayout: React.FC = () => {
                                     />
                                 </>
                             ) : null}
-                            <Sidebar
-                                isOpen={isSidebarOpen}
-                                isMobile={isMobile}
-                                className="border-0"
-                            >
-                                <SessionSidebar />
-                            </Sidebar>
+                            <div className="max-md:hidden">
+                                <Sidebar
+                                    isOpen={isSidebarOpen}
+                                    isMobile={isMobile}
+                                    className="border-0"
+                                >
+                                    {layoutReady ? <SessionSidebar /> : null}
+                                </Sidebar>
+                            </div>
                             <div className={cn(
                                 'relative flex flex-1 min-w-0 flex-col overflow-hidden',
                                 'bg-sidebar',

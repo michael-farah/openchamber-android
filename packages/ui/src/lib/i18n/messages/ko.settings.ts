@@ -1256,6 +1256,7 @@ export const settingsDict = {
   'settings.notifications.page.push.twaPermissionDenied': '알림 권한이 거부되었습니다. Android에서 설정 → 앱 → OpenChamber → 알림에서 알림을 활성화하세요.',
   'settings.notifications.page.push.openAndroidSettings': '알림 설정 열기',
   'settings.notifications.page.push.twaOpenSettingsHint': '기기 설정 → 앱 → OpenChamber → 알림에서 알림을 활성화하세요.',
+  'settings.notifications.page.push.twaPermissionDeniedCct': '알림이 차단되었습니다. 브라우저 또는 Android 알림 설정에서 알림을 활성화하세요.',
   'settings.notifications.page.toast.permissionDenied.title': '알림 권한이 거부되었습니다',
   'settings.notifications.page.toast.permissionDenied.description': '브라우저 설정에서 알림을 활성화하세요.',
   'settings.notifications.page.toast.permissionDenied.enableInBrowser': '브라우저 설정에서 알림을 활성화하세요.',

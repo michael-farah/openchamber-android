@@ -61,3 +61,16 @@ workspaces/
 # Android TWA build artifacts
 packages/android-twa/configurable-wrapper/app/build/
 packages/android-twa/configurable-wrapper/local.properties
+
+# Local CI runner binary (downloaded, not part of the repo)
+bin/
+
+# Local tool state
+.sisyphus/
+
+# Local build/eval artifacts (signed APKs, review output)
+evaluation/
+
+# Local opencode CLI config overrides
+opencode.json
+opencode.json.openchamber.backup

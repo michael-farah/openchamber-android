@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
-import { useIsAndroidTwa } from '@/hooks/useIsAndroidTwa';
+import { useIsAndroidTwa, hasAndroidNotificationBridge } from '@/hooks/useIsAndroidTwa';
 
 const DEFAULT_NOTIFICATION_TEMPLATES = {
   completion: {
@@ -57,6 +57,7 @@ export const NotificationSettings: React.FC = () => {
   const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
   const isBrowser = !isDesktop && !isVSCode;
   const isAndroidTwa = useIsAndroidTwa();
+  const hasBridge = hasAndroidNotificationBridge();
   const nativeNotificationsEnabled = useUIStore(state => state.nativeNotificationsEnabled);
   const setNativeNotificationsEnabled = useUIStore(state => state.setNativeNotificationsEnabled);
   const notificationMode = useUIStore(state => state.notificationMode);
@@ -88,6 +89,48 @@ export const NotificationSettings: React.FC = () => {
   const [pushBusy, setPushBusy] = React.useState(false);
   const [, setBridgeInstalled] = React.useState(false);
   const [fetchedZenModels, setFetchedZenModels] = React.useState<Array<{ id: string; name: string }>>([]);
+
+  const waitForNotificationApi = React.useCallback(async (timeoutMs = 3000): Promise<boolean> => {
+    if (typeof window !== 'undefined' && typeof window.Notification !== 'undefined') return true;
+    return new Promise<boolean>((resolve) => {
+      let resolved = false;
+      const cleanup = () => {
+        window.removeEventListener('notificationbridgeinstalled', onBridge);
+        clearTimeout(timer);
+        clearInterval(pollInterval);
+      };
+      const done = (result: boolean) => {
+        if (resolved) return;
+        resolved = true;
+        cleanup();
+        setNotificationApiReady(result && typeof window.Notification !== 'undefined');
+        resolve(result);
+      };
+      const onBridge = () => {
+        if (typeof window.Notification !== 'undefined') {
+          done(true);
+        }
+      };
+      const check = () => {
+        if (typeof window !== 'undefined' && typeof window.Notification !== 'undefined') {
+          done(true);
+          return true;
+        }
+        return false;
+      };
+      const pollInterval = window.setInterval(() => {
+        check();
+      }, 100);
+      const timer = window.setTimeout(() => {
+        check();
+        if (!resolved) done(false);
+      }, timeoutMs);
+      window.addEventListener('notificationbridgeinstalled', onBridge);
+    });
+  }, []);
+  const [notificationApiReady, setNotificationApiReady] = React.useState(
+    typeof window !== 'undefined' && typeof window.Notification !== 'undefined'
+  );
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -159,14 +202,26 @@ export const NotificationSettings: React.FC = () => {
     [setSettingsZenModel]
   );
 
+  const readNotificationPermission = React.useCallback((): NotificationPermission => {
+    if (typeof window === 'undefined') return 'default';
+    if (typeof window.Notification === 'undefined') {
+      return isAndroidTwa ? 'default' : 'denied';
+    }
+    return window.Notification.permission;
+  }, [isAndroidTwa]);
+
+  const syncNotificationPermission = React.useCallback((): NotificationPermission => {
+    const permission = readNotificationPermission();
+    setNotificationPermission(permission);
+    return permission;
+  }, [readNotificationPermission]);
+
   const evaluateNotificationState = React.useCallback((bridgeEvent = false) => {
     if (bridgeEvent) {
       setBridgeInstalled(true);
     }
 
-    if (typeof Notification !== 'undefined') {
-      setNotificationPermission(Notification.permission);
-    }
+    syncNotificationPermission();
 
     const supported = typeof window !== 'undefined'
       && 'serviceWorker' in navigator
@@ -193,7 +248,7 @@ export const NotificationSettings: React.FC = () => {
       .catch(() => {
         setPushSubscribed(false);
       });
-  }, []);
+  }, [syncNotificationPermission]);
 
   React.useEffect(() => {
     if (!isBrowser) {
@@ -207,9 +262,31 @@ export const NotificationSettings: React.FC = () => {
     const onBridgeInstalled = () => {
       evaluateNotificationState(true);
     };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        evaluateNotificationState();
+      }
+    };
+
+    const onFocus = () => {
+      evaluateNotificationState();
+    };
+
     window.addEventListener('notificationbridgeinstalled', onBridgeInstalled);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', onFocus);
+
+    // Delayed retries for late Android WebView bridge injection
+    const retry1 = window.setTimeout(() => evaluateNotificationState(), 100);
+    const retry2 = window.setTimeout(() => evaluateNotificationState(), 500);
+
     return () => {
       window.removeEventListener('notificationbridgeinstalled', onBridgeInstalled);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', onFocus);
+      window.clearTimeout(retry1);
+      window.clearTimeout(retry2);
     };
   }, [isBrowser, evaluateNotificationState]);
 
@@ -224,38 +301,82 @@ export const NotificationSettings: React.FC = () => {
       return;
     }
 
-    if (typeof Notification === 'undefined') {
-      toast.error('Notifications not available', {
-        description: 'The notification bridge has not loaded yet. Please reload the page.',
-      });
+    // Turning off should always work immediately
+    if (!checked) {
+      setNativeNotificationsEnabled(false);
       return;
     }
 
-    if (checked && Notification.permission === 'default') {
-      try {
-        const permission = await Notification.requestPermission();
-        setNotificationPermission(permission);
-        if (permission === 'granted') {
-          setNativeNotificationsEnabled(true);
-        } else {
-          toast.error(t('settings.notifications.page.toast.permissionDenied.title'), {
-            description: t('settings.notifications.page.toast.permissionDenied.description'),
-          });
+    // TWA-specific path: user wants to enable notifications
+    if (isAndroidTwa) {
+      // Always set the toggle to true immediately (user intent).
+      // Permission is managed at the Android level, not browser level.
+      setNativeNotificationsEnabled(true);
+
+      // Wait for the Notification API to be available (bridge race)
+      const apiReady = await waitForNotificationApi();
+      if (!apiReady) {
+        // API never became available, but we still keep the toggle on.
+        return;
+      }
+
+      // Read and sync permission
+      let permission = readNotificationPermission();
+      setNotificationPermission(permission);
+
+      if (permission === 'default') {
+        try {
+          permission = await window.Notification.requestPermission();
+          setNotificationPermission(permission);
+        } catch (error) {
+          console.error('Failed to request notification permission:', error);
         }
+      }
+
+      // In TWA, even if permission is 'denied', we keep the toggle ON.
+      // The user controls this via Android settings, not browser permission.
+      return;
+    }
+
+    // Regular browser path
+    if (typeof window === 'undefined' || typeof window.Notification === 'undefined') {
+      setNativeNotificationsEnabled(false);
+      toast.error(t('settings.notifications.page.toast.notificationsApiUnavailable'));
+      return;
+    }
+
+    let permission = readNotificationPermission();
+    setNotificationPermission(permission);
+
+    if (permission === 'default') {
+      try {
+        permission = await window.Notification.requestPermission();
+        setNotificationPermission(permission);
       } catch (error) {
         console.error('Failed to request notification permission:', error);
+        setNativeNotificationsEnabled(false);
         toast.error(t('settings.notifications.page.toast.requestPermissionFailed'));
+        return;
       }
-    } else if (checked && notificationPermission === 'granted') {
-      setNativeNotificationsEnabled(true);
-    } else {
-      setNativeNotificationsEnabled(false);
     }
+
+    if (permission === 'granted') {
+      setNativeNotificationsEnabled(true);
+      return;
+    }
+
+    // Permission is 'denied' or otherwise not granted
+    setNativeNotificationsEnabled(false);
+    toast.error(t('settings.notifications.page.toast.permissionDenied.title'), {
+      description: t('settings.notifications.page.toast.permissionDenied.description'),
+    });
   };
 
-  const canShowNotifications = isDesktop || isVSCode || (isBrowser && typeof Notification !== 'undefined' && Notification.permission === 'granted');
-
-  const canRequestNotificationPermission = isDesktop || isVSCode || (isBrowser && typeof Notification !== 'undefined');
+  const hasNotificationApi = isBrowser && (notificationApiReady || (typeof window !== 'undefined' && typeof window.Notification !== 'undefined'));
+  const notificationPermissionGranted = isDesktop || isVSCode || isAndroidTwa || (hasNotificationApi && notificationPermission === 'granted');
+  const notificationsActuallyEnabled = nativeNotificationsEnabled && notificationPermissionGranted;
+  const canAttemptNotificationEnable = isDesktop || isVSCode || isAndroidTwa || hasNotificationApi;
+  const notificationToggleChecked = isAndroidTwa ? nativeNotificationsEnabled : notificationsActuallyEnabled;
 
   const updateTemplate = (
     event: 'completion' | 'error' | 'question' | 'subtask',
@@ -583,31 +704,33 @@ export const NotificationSettings: React.FC = () => {
               className="group flex cursor-pointer items-center gap-2 py-1.5"
               role="button"
               tabIndex={0}
-              aria-pressed={nativeNotificationsEnabled}
-              aria-disabled={!canRequestNotificationPermission && isBrowser}
+              aria-pressed={notificationToggleChecked}
+              aria-disabled={!canAttemptNotificationEnable && isBrowser}
               onClick={() => {
-                if (isBrowser && !canRequestNotificationPermission) return;
-                void handleToggleChange(!nativeNotificationsEnabled);
+                if (isBrowser && !canAttemptNotificationEnable) return;
+                void handleToggleChange(!notificationToggleChecked);
               }}
               onKeyDown={(event) => {
                 if (event.key === ' ' || event.key === 'Enter') {
                   event.preventDefault();
-                  if (isBrowser && !canRequestNotificationPermission) return;
-                  void handleToggleChange(!nativeNotificationsEnabled);
+                  if (isBrowser && !canAttemptNotificationEnable) return;
+                  void handleToggleChange(!notificationToggleChecked);
                 }
               }}
             >
-              <Checkbox
-                checked={nativeNotificationsEnabled && canShowNotifications}
-                onChange={(checked) => {
-                  void handleToggleChange(checked);
-                }}
-                ariaLabel={t('settings.notifications.page.delivery.enableAria')}
-              />
+              <div onClick={(event) => { event.stopPropagation(); }}>
+                <Checkbox
+                  checked={notificationToggleChecked}
+                  onChange={(checked) => {
+                    void handleToggleChange(checked);
+                  }}
+                  ariaLabel={t('settings.notifications.page.delivery.enableAria')}
+                />
+              </div>
               <span className="typography-ui-label text-foreground">{t('settings.notifications.page.delivery.enableLabel')}</span>
             </div>
 
-            {nativeNotificationsEnabled && canShowNotifications && (
+            {notificationsActuallyEnabled && (
               <>
                 <div
                   className="group flex cursor-pointer items-center gap-2 py-1.5"
@@ -661,6 +784,30 @@ export const NotificationSettings: React.FC = () => {
               )}
             </div>
           )}
+        {isAndroidTwa && notificationPermission === 'denied' && nativeNotificationsEnabled && (
+          <div className="mt-1 px-2">
+            <p className="typography-meta text-[var(--status-error)]">
+              {hasBridge ? t('settings.notifications.page.push.twaPermissionDenied') : t('settings.notifications.page.push.twaPermissionDeniedCct')}
+            </p>
+            {hasBridge && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={() => {
+                  if (typeof window.AndroidNotificationBridge?.openNotificationSettings === 'function') {
+                    window.AndroidNotificationBridge.openNotificationSettings();
+                  } else if (typeof window.AndroidNotificationBridge?.openAppSettings === 'function') {
+                    window.AndroidNotificationBridge.openAppSettings();
+                  }
+                }}
+              >
+                {t('settings.notifications.page.push.openAndroidSettings')}
+              </Button>
+            )}
+          </div>
+        )}
           {isVSCode && (
             <div className="mt-1 px-2">
               <p className="typography-meta text-muted-foreground/70">
@@ -670,7 +817,7 @@ export const NotificationSettings: React.FC = () => {
           )}
         </div>
 
-        {nativeNotificationsEnabled && canShowNotifications && (
+        {notificationsActuallyEnabled && (
           <>
             {/* --- Events --- */}
             <div className="mb-8">
@@ -1003,8 +1150,8 @@ export const NotificationSettings: React.FC = () => {
       </div>
       </section>
 
-      {/* TWA-specific permission hint */}
-      {isAndroidTwa && notificationPermission === 'denied' && pushSupported && !pushSubscribed && (
+      {/* TWA-specific permission hint — WebView fallback (bridge present) */}
+      {isAndroidTwa && hasBridge && notificationPermission === 'denied' && pushSupported && !pushSubscribed && (
         <div className="px-2 pb-1">
           <p className="typography-meta text-[var(--status-error)]">
             {t('settings.notifications.page.push.twaPermissionDenied')}
@@ -1015,8 +1162,6 @@ export const NotificationSettings: React.FC = () => {
             size="sm"
             className="mt-2"
             onClick={() => {
-              // Try to open Android notification settings via the bridge (WebView fallback)
-              // or direct the user to system settings (TWA Chrome Custom Tab)
               if (typeof window.AndroidNotificationBridge?.openNotificationSettings === 'function') {
                 window.AndroidNotificationBridge.openNotificationSettings();
               } else {
@@ -1026,6 +1171,14 @@ export const NotificationSettings: React.FC = () => {
           >
             {t('settings.notifications.page.push.openAndroidSettings')}
           </Button>
+        </div>
+      )}
+      {/* TWA-specific permission hint — Chrome Custom Tab (no bridge) */}
+      {isAndroidTwa && !hasBridge && notificationPermission === 'denied' && pushSupported && !pushSubscribed && (
+        <div className="px-2 pb-1">
+          <p className="typography-meta text-[var(--status-error)]">
+            {t('settings.notifications.page.push.twaPermissionDeniedCct')}
+          </p>
         </div>
       )}
           </div>

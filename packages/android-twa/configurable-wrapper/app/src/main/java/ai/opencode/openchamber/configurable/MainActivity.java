@@ -537,24 +537,74 @@ public class MainActivity extends AppCompatActivity {
                 savedInstanceState.getString("pendingNotificationCallbackId");
     }
 
- @Override
- protected void onNewIntent(Intent intent) {
- super.onNewIntent(intent);
- setIntent(intent);
- // If the WebView is active, navigate to the session from the notification.
- // For TWA mode, the Chrome Custom Tab handles deep links through the
- // intent data URI.
- if (webView != null && webView.getVisibility() == View.VISIBLE) {
- String url = getSavedUrl();
- if (url != null) {
- String sessionParam = intent.getStringExtra("sessionUrl");
- if (sessionParam != null && !sessionParam.isEmpty()) {
- String fullUrl = url.replaceAll("/$", "") + sessionParam;
- webView.loadUrl(fullUrl);
- }
- }
- }
- }
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        // If the WebView is active, navigate to the session from the notification.
+        // For TWA mode, the Chrome Custom Tab handles deep links through the
+        // intent data URI.
+        String sessionParam = intent.getStringExtra("sessionUrl");
+        if (sessionParam != null && !sessionParam.isEmpty()) {
+            String baseUrl = getSavedUrl();
+            if (baseUrl != null) {
+                String fullUrl = baseUrl.replaceAll("/$", "") + sessionParam;
+                if (isAllowedAppUrl(fullUrl)) {
+                    if (webView != null && webView.getVisibility() == View.VISIBLE) {
+                        // WebView fallback — load directly
+                        webView.loadUrl(fullUrl);
+                    } else {
+                        // TWA Chrome Custom Tab mode — re-launch the TWA with the session URL.
+                        // The CustomTabsIntent will navigate the existing CCT if it's active.
+                        try {
+                            android.net.Uri uri = android.net.Uri.parse(fullUrl);
+                            android.content.Intent launchIntent = new android.content.Intent(
+                                    android.content.Intent.ACTION_VIEW, uri);
+                            launchIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(launchIntent);
+                        } catch (Exception e) {
+                            // Fallback: ignore if we can't launch the CCT
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Validate that a URL is safe to load — same host as the configured server.
+     * Rejects javascript:, file:, data:, intent: schemes and cross-origin hosts.
+     */
+    private boolean isAllowedAppUrl(String url) {
+        if (url == null || url.isEmpty()) return false;
+        String lower = url.toLowerCase();
+        if (lower.startsWith("javascript:") || lower.startsWith("file:")
+                || lower.startsWith("data:") || lower.startsWith("intent:")
+                || lower.startsWith("vbscript:")) {
+            return false;
+        }
+        try {
+            java.net.URI uri = new java.net.URI(url);
+            String scheme = uri.getScheme();
+            if (scheme != null && !scheme.equals("https") && !scheme.equals("http")) {
+                return false;
+            }
+            String host = uri.getHost();
+            if (host != null) {
+                String savedUrl = getSavedUrl();
+                if (savedUrl != null) {
+                    java.net.URI savedUri = new java.net.URI(savedUrl);
+                    String allowedHost = savedUri.getHost();
+                    if (allowedHost != null && !allowedHost.equalsIgnoreCase(host)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
 
  private void createNotificationChannels() {
  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;

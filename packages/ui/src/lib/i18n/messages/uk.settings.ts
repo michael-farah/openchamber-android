@@ -1256,6 +1256,7 @@ export const settingsDict = {
   "settings.notifications.page.push.twaPermissionDenied": "Дозвіл на сповіщення відхилено. На Android увімкніть сповіщення в Налаштуваннях → Додатки → OpenChamber → Сповіщення.",
   "settings.notifications.page.push.openAndroidSettings": "Відкрити налаштування сповіщень",
   "settings.notifications.page.push.twaOpenSettingsHint": "Відкрийте Налаштування → Додатки → OpenChamber → Сповіщення, щоб увімкнути сповіщення.",
+  "settings.notifications.page.push.twaPermissionDeniedCct": "Сповіщення заблоковано. Увімкніть їх у налаштуваннях сповіщень браузера або Android.",
   "settings.notifications.page.toast.permissionDenied.title": "Дозвіл на сповіщення відмовлено",
   "settings.notifications.page.toast.permissionDenied.description": "Увімкніть сповіщення в налаштуваннях браузера.",
   "settings.notifications.page.toast.permissionDenied.enableInBrowser": "Увімкніть сповіщення в налаштуваннях браузера.",

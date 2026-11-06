@@ -32,6 +32,7 @@ import { registerRoute, NavigationRoute } from 'workbox-routing';
 import { NetworkFirst, CacheFirst } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
 import type { RouteHandler } from 'workbox-core';
+import { sanitizeNotificationUrl } from './sw-url-utils';
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<string | { url: string; revision?: string }>;
@@ -59,7 +60,12 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil((async () => {
+    await self.clients.claim();
+    if (await readTwaContextFlag()) {
+      registerTwaRoutes();
+    }
+  })());
 });
 
 self.addEventListener('push', (event) => {
@@ -97,10 +103,10 @@ self.addEventListener('push', (event) => {
 });
 
 self.addEventListener('notificationclick', (event) => {
- event.notification.close();
+  event.notification.close();
 
- const data = (event.notification.data ?? null) as { url?: string } | null;
- const url = data?.url ?? '/';
+  const data = (event.notification.data ?? null) as { url?: string } | null;
+  const url = sanitizeNotificationUrl(data?.url, self.location.origin);
 
  event.waitUntil(
  (async () => {
@@ -131,6 +137,95 @@ self.addEventListener('notificationclick', (event) => {
 
 let twaRoutesRegistered = false;
 
+// ---------------------------------------------------------------------------
+// TWA context flag persistence — survives SW restart via Cache API
+// ---------------------------------------------------------------------------
+
+/** Cache name for the TWA routes flag. */
+export const TWA_FLAG_CACHE = 'twa-routes-flag';
+
+/** Key used inside the cache to store the TWA flag. */
+export const TWA_FLAG_KEY = 'TWA_ROUTES_ACTIVE';
+
+/**
+ * Thin wrapper around the Cache API, injectable for testing.
+ * The default implementation uses the service worker `caches` global.
+ */
+export interface CacheStore {
+  open(name: string): Promise<CacheStoreEntry>;
+}
+
+export interface CacheStoreEntry {
+  put(key: string, response: Response): Promise<void>;
+  match(key: string): Promise<Response | undefined>;
+  delete(key: string): Promise<boolean>;
+}
+
+const defaultCacheStore: CacheStore = {
+  open(name: string) {
+    return caches.open(name) as unknown as Promise<CacheStoreEntry>;
+  },
+};
+
+let cacheStore: CacheStore = defaultCacheStore;
+
+/** Replace the cache store with a mock implementation (testing only). */
+export function _setCacheStoreForTesting(store: CacheStore): void {
+  cacheStore = store;
+}
+
+/** Read the in-memory twaRoutesRegistered flag (testing only). */
+export function _getTwaRoutesRegistered(): boolean {
+  return twaRoutesRegistered;
+}
+
+/** Reset the in-memory twaRoutesRegistered flag (testing only). */
+export function _resetTwaRoutesRegistered(): void {
+  twaRoutesRegistered = false;
+}
+
+/**
+ * Persist the TWA context flag to Cache API so it survives SW restarts.
+ * Called after registering Workbox routes.
+ */
+export async function persistTwaContextFlag(): Promise<void> {
+  try {
+    const cache = await cacheStore.open(TWA_FLAG_CACHE);
+    await cache.put(TWA_FLAG_KEY, new Response('1'));
+  } catch {
+    // Cache API unavailable — flag won't persist across restarts.
+    // The runtime TWA_CONTEXT message will still work for the current lifecycle.
+  }
+}
+
+/**
+ * Read the TWA context flag from Cache API.
+ * Returns true if the flag exists (meaning routes were previously registered
+ * in a TWA context), false otherwise.
+ */
+export async function readTwaContextFlag(): Promise<boolean> {
+  try {
+    const cache = await cacheStore.open(TWA_FLAG_CACHE);
+    const response = await cache.match(TWA_FLAG_KEY);
+    return response !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove the TWA context flag from Cache API.
+ * Useful if the app needs to explicitly clear the TWA routing state.
+ */
+export async function clearTwaContextFlag(): Promise<void> {
+  try {
+    const cache = await cacheStore.open(TWA_FLAG_CACHE);
+    await cache.delete(TWA_FLAG_KEY);
+  } catch {
+    // Cache API unavailable — nothing to clear.
+  }
+}
+
 const OFFLINE_BODY = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -156,7 +251,7 @@ const offlineFallbackResponse = () => new Response(OFFLINE_BODY, {
   headers: { 'Content-Type': 'text/html; charset=utf-8' },
 });
 
-function registerTwaRoutes() {
+export function registerTwaRoutes() {
   if (twaRoutesRegistered) return;
   twaRoutesRegistered = true;
 
@@ -204,6 +299,9 @@ function registerTwaRoutes() {
       ],
     }) as unknown as RouteHandler,
   );
+
+  // Persist the TWA flag so routes are re-registered after SW restart
+  persistTwaContextFlag();
 }
 
 self.addEventListener('message', (event) => {
